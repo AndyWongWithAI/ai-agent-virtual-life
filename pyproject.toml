@@ -8,7 +8,11 @@ dependencies = []
 [tool.uv.workspace]
 members = [
     "packages/llm-client",
+    "packages/memory-reflection",
 ]
+
+[tool.uv.sources]
+llm-client = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
