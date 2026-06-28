@@ -1,0 +1,22 @@
+[project]
+name = "llm-client"
+version = "0.1.0"
+description = "MiniMax M3 LLM 客户端(限速/重试/降级/成本追踪),统一处理 CNY 计费"
+requires-python = ">=3.12"
+dependencies = [
+  "openai>=1.40",       # MiniMax M3 用 OpenAI 兼容接口
+  "redis>=5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_client"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]

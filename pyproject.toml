@@ -1,0 +1,15 @@
+[project]
+name = "ai-agent-virtual-life"
+version = "0.1.0"
+description = "LLM 驱动的虚拟小镇,智能体 24/7 在跑"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = [
+    "packages/llm-client",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages"]
