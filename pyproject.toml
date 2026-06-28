@@ -9,10 +9,13 @@ dependencies = []
 members = [
     "packages/llm-client",
     "packages/memory-reflection",
+    "packages/event-bus",
 ]
 
 [tool.uv.sources]
 llm-client = { workspace = true }
+memory-reflection = { workspace = true }
+event-bus = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
