@@ -1,0 +1,10 @@
+body { font-family: "PingFang SC", sans-serif; margin: 20px; background: #fafafa; }
+h1 { color: #333; }
+#clock { font-size: 18px; color: #666; margin-bottom: 10px; }
+#map-container { border: 2px solid #ccc; display: inline-block; background: #fff; }
+canvas { display: block; }
+#events {
+  margin-top: 20px; max-height: 200px; overflow-y: auto;
+  background: #fff; border: 1px solid #ddd; padding: 10px;
+}
+.event { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 14px; }
