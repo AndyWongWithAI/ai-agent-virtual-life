@@ -30,4 +30,5 @@ class World:
             "weekday": self.clock.weekday_cn(),
             "weather": "晴",  # MVP 先固定
             "status_bar": "饱 70, 累 40, 孤独 30, 快乐 60",  # MVP 占位,后续接真实状态
+            "legal_targets": list(DEFAULT_LOCATIONS),  # AD1/AD7:I2 fix 单一事实源
         }
