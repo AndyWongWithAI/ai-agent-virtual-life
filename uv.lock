@@ -4,10 +4,38 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "agent-runtime",
     "ai-agent-virtual-life",
     "event-bus",
     "llm-client",
     "memory-reflection",
+]
+
+[[package]]
+name = "agent-runtime"
+version = "0.1.0"
+source = { editable = "packages/agent-runtime" }
+dependencies = [
+    { name = "llm-client" },
+    { name = "memory-reflection" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "llm-client", editable = "packages/llm-client" },
+    { name = "memory-reflection", editable = "packages/memory-reflection" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
 ]
 
 [[package]]
