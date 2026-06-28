@@ -3,6 +3,7 @@
 组装 LLM 客户端 + 短期/长期记忆 + 反思器 + 作息锁 + 决策核心。
 decide() 是核心入口,tick 调度器每 60s/300s 调用一次。
 """
+import logging
 from datetime import datetime
 
 from llm_client import LLMClient
@@ -11,6 +12,8 @@ from memory_reflection import ShortTermMemory, LongTermMemory, Reflector
 from .decision import DecisionMaker
 from .schedule import ScheduleLock
 from .actions import Action
+
+logger = logging.getLogger(__name__)
 
 
 class Agent:
@@ -44,6 +47,9 @@ class Agent:
             recent_summary=recent_summary,
             forced_action=forced,
         )
-        # 反思调度
-        await self.reflector.maybe_reflect(self.agent_id)
+        # C4 fix:反思失败不应拖垮本 tick,不让其他 agent 跟着停摆
+        try:
+            await self.reflector.maybe_reflect(self.agent_id)
+        except Exception:
+            logger.exception("reflector.maybe_reflect failed for %s", self.agent_id)
         return action

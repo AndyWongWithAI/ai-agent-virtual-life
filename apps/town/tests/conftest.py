@@ -107,12 +107,12 @@ async def client(monkeypatch):
     # 用 lifespan-style startup:httpx AsyncClient + ASGITransport 触发 startup 事件
     transport = ASGITransport(app=town_main.app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
-        # 手动触发 startup(ASGITransport 默认不发 lifespan)
-        # 直接调 app.router.startup,等价 on_event("startup")
-        for handler in town_main.app.router.on_startup:
-            await handler()
-        try:
-            yield c
-        finally:
-            for handler in town_main.app.router.on_shutdown:
-                await handler()
+        # 手动触发 lifespan(ASGITransport 默认不发 lifespan)
+        # 取 lifespan_context(已绑定到 app.router),进入 with 块
+        async with town_main.app.router.lifespan_context(town_main.app):
+            # 同时把 ctx 注入到 main 模块,让 /api/agents 路由能拿到
+            town_main.ctx = stub_ctx
+            try:
+                yield c
+            finally:
+                town_main.ctx = None
