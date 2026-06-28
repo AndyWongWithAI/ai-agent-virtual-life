@@ -14,6 +14,7 @@ members = [
     "packages/event-memory-system",
     "packages/virtual-world-engine",
     "packages/agent-behavior-orchestrator",
+    "packages/dialogue-generator",
 ]
 
 [tool.uv.sources]
@@ -24,6 +25,7 @@ agent-runtime = { workspace = true }
 event-memory-system = { workspace = true }
 virtual-world-engine = { workspace = true }
 agent-behavior-orchestrator = { workspace = true }
+dialogue-generator = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
