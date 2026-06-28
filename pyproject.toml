@@ -15,6 +15,7 @@ members = [
     "packages/virtual-world-engine",
     "packages/agent-behavior-orchestrator",
     "packages/dialogue-generator",
+    "apps/town",
 ]
 
 [tool.uv.sources]
