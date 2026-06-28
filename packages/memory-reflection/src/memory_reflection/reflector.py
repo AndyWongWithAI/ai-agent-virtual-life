@@ -1,9 +1,17 @@
-"""反思摘要器:每 6 小时触发,把过去 6h 短期事件压缩成反思摘要"""
-from datetime import datetime, timedelta
+"""反思摘要器:每 6 小时触发,把过去 6h 短期事件压缩成反思摘要
+I9 fix:last_reflect 持久化到 Redis,重启后不立刻全部触发
+I10 fix:events_text 按时间正序输出,LLM 读起来是"早→晚"
+"""
+import logging
+from datetime import datetime, timedelta, timezone
 
 from .short_term import ShortTermMemory
 from .long_term import LongTermMemory
 from .models import Summary
+
+logger = logging.getLogger(__name__)
+
+LAST_REFLECT_TTL_SEC = 7 * 86400  # 7d,留余量;触发条件是 6h
 
 
 class Reflector:
@@ -13,11 +21,51 @@ class Reflector:
         self.llm = llm_client
         self.stm = stm
         self.ltm = ltm
+        # 内存缓存(进程内),减少 Redis round-trip;权威值在 Redis
         self.last_reflect: dict[str, datetime] = {}
+
+    def _redis_key(self, agent_id: str) -> str:
+        return f"reflect:last:{agent_id}"
+
+    async def _get_last(self, agent_id: str) -> datetime | None:
+        # 先看内存
+        v = self.last_reflect.get(agent_id)
+        if v is not None:
+            return v
+        # 退化到 Redis(进程重启后)
+        try:
+            raw = await self.ltm.redis.get(self._redis_key(agent_id))
+        except Exception:
+            logger.exception("redis get last_reflect failed")
+            return None
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        # 兼容 mock / 非 str 类型(测试或异常 driver)
+        if not isinstance(raw, str):
+            return None
+        try:
+            ts = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        self.last_reflect[agent_id] = ts
+        return ts
+
+    async def _set_last(self, agent_id: str, ts: datetime) -> None:
+        self.last_reflect[agent_id] = ts
+        try:
+            await self.ltm.redis.set(
+                self._redis_key(agent_id),
+                ts.isoformat(),
+                ex=LAST_REFLECT_TTL_SEC,
+            )
+        except Exception:
+            logger.exception("redis set last_reflect failed")
 
     async def maybe_reflect(self, agent_id: str, now: datetime | None = None) -> str | None:
         now = now or datetime.now()
-        last = self.last_reflect.get(agent_id)
+        last = await self._get_last(agent_id)
         if last and (now - last) < timedelta(hours=6):
             return None
 
@@ -30,6 +78,8 @@ class Reflector:
         if len(window) < 3:
             return None
 
+        # I10 fix:按时间正序输出,LLM 看到的叙事是"早→晚"
+        window.sort(key=lambda e: e.ts)
         events_text = "\n".join(
             f"- {e.ts.strftime('%H:%M')} [{e.kind}] {e.content}" for e in window[:50]
         )
@@ -52,5 +102,5 @@ class Reflector:
                 text=summary_text,
             )
         )
-        self.last_reflect[agent_id] = now
+        await self._set_last(agent_id, now)
         return summary_text

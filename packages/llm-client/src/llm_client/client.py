@@ -6,14 +6,19 @@
 - 重试:retry_with_backoff 处理 5xx/网络抖动
 - 降级:json_schema 校验失败抛 ValueError,由上游业务决定 fallback
 - 成本:基于 usage 估算 CNY,写入 Redis 计数器,超预算抛 BudgetExceeded
+  I3 fix:usage 为 None 时按 max_tokens 悲观估算(防免费泄漏)
+  I4 fix:cost 累加在每次 attempt 内部(retry 3 次 → 累加 3 次)
 """
 import json
+import logging
 import redis.asyncio as redis_async
 from openai import AsyncOpenAI
 
 from .rate_limiter import TokenBucket
 from .retry import retry_with_backoff
 from .budget import BudgetTracker, BudgetExceeded
+
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
@@ -49,6 +54,7 @@ class LLMClient:
 
         messages: [{"role": "user|assistant|system", "content": str}]
         cost 估算:¥1/M input + ¥2/M output(MiniMax M3 参考价量级)
+        I3 fix:usage 缺失时按 max_tokens 上限估算(悲观计费),防免费泄漏
         """
         resp = await self.client.chat.completions.create(
             model=self.model,
@@ -56,8 +62,19 @@ class LLMClient:
             messages=messages,
         )
         text = resp.choices[0].message.content or ""
-        in_tok = resp.usage.prompt_tokens if resp.usage else 0
-        out_tok = resp.usage.completion_tokens if resp.usage else 0
+        if resp.usage:
+            in_tok = resp.usage.prompt_tokens
+            out_tok = resp.usage.completion_tokens
+        else:
+            # I3 fix:悲观估算 — input 按 messages 字符数 / 4 粗估(英文 1tok≈4char),
+            # output 按 max_tokens 上限。WARN 日志,方便排障发现 MiniMax M3 的偶发 bug。
+            in_tok = sum(len(m.get("content", "")) for m in messages) // 4
+            out_tok = max_tokens
+            logger.warning(
+                "LLM usage is None, falling back to pessimistic estimate"
+                " (in_tok≈%d, out_tok=%d)",
+                in_tok, out_tok,
+            )
         cost_cny = (in_tok * 1 + out_tok * 2) / 1_000_000
         return text, cost_cny
 
@@ -76,13 +93,23 @@ class LLMClient:
         异常:
             BudgetExceeded:日预算耗尽
             ValueError:JSON 解析或 schema 校验失败
+
+        I4 fix:每次 attempt 累加 cost(retry 3 次 → 累加 3 次)。
+        实现:把 record_and_check 放在 retry 闭包内,每次 coro_factory() 调用
+        后立即累加。
         """
         await self.bucket.acquire()
-        text, cost = await retry_with_backoff(
-            lambda: self._raw_call(messages, max_tokens),
-            max_attempts=3,
-        )
-        await self.budget.record_and_check(cost)
+        accumulated = 0.0
+
+        async def _attempt():
+            nonlocal accumulated
+            text, cost = await self._raw_call(messages, max_tokens)
+            accumulated += cost
+            # 累加完再 check,这样 retry 中超预算能及时抛 BudgetExceeded
+            await self.budget.record_and_check(cost)
+            return text
+
+        text = await retry_with_backoff(_attempt, max_attempts=3)
         if json_schema:
             try:
                 parsed = json.loads(text)
