@@ -13,3 +13,6 @@ node_modules/
 dist/
 build/
 .DS_Store
+
+# Subagent-Driven Development internal state(不污染 working tree)
+.sdd/
