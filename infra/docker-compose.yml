@@ -1,0 +1,33 @@
+# infra/docker-compose.yml
+# 端口映射说明(2026-06-29):本机 Postgres 18 已占 5432(babybus 项目),docker host port 改 5433 避免冲突。
+# 同理 Redis 6379 改 6380 防止与其他项目潜在冲突。
+# 容器内端口保持 5432/6379 不变(只改 host 端口)。
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: town
+      POSTGRES_PASSWORD: town_dev_pwd
+      POSTGRES_DB: town
+    ports:
+      - "5433:5432"
+    volumes:
+      - town_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U town"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  town_pg:
