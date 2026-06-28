@@ -72,13 +72,33 @@ function connectWS() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    if (msg.topic === "agent.decision" || msg.action) {
-      const { agent_id, action } = msg;
-      if (action && action.name === "go_to" && LOCATIONS[action.target]) {
-        agentPositions[agent_id] = action.target;
+    switch (msg.topic) {
+      case "agent.decision": {
+        const { agent_id, action } = msg;
+        if (action && action.name === "go_to" && LOCATIONS[action.target]) {
+          agentPositions[agent_id] = action.target;
+        }
+        addEvent(
+          `${agentNames[agent_id] || agent_id}: ${action ? action.name : "?"} -> ${action ? action.target || "-" : ""}`
+        );
+        draw();
+        break;
       }
-      addEvent(`${agentNames[agent_id] || agent_id}: ${msg.action ? msg.action.name : "?"} -> ${msg.action ? msg.action.target || "-" : ""}`);
-      draw();
+      case "dialogue.start": {
+        addEvent(
+          `🗨️ 对话开始 @ ${msg.location || "?"}(参与者 ${(msg.participants || []).map((id) => agentNames[id] || id).join(" & ")})`
+        );
+        break;
+      }
+      case "dialogue.message": {
+        addEvent(
+          `💬 ${agentNames[msg.agent_id] || msg.agent_id}: ${msg.content || ""}`
+        );
+        break;
+      }
+      default:
+        // 忽略未知 topic,不刷屏
+        break;
     }
   };
   ws.onclose = () => setTimeout(connectWS, 3000);
