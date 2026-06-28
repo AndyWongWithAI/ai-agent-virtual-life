@@ -4,6 +4,7 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "agent-behavior-orchestrator",
     "agent-runtime",
     "ai-agent-virtual-life",
     "event-bus",
@@ -11,6 +12,29 @@ members = [
     "llm-client",
     "memory-reflection",
     "virtual-world-engine",
+]
+
+[[package]]
+name = "agent-behavior-orchestrator"
+version = "0.1.0"
+source = { editable = "packages/agent-behavior-orchestrator" }
+dependencies = [
+    { name = "virtual-world-engine" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "virtual-world-engine", editable = "packages/virtual-world-engine" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
 ]
 
 [[package]]
