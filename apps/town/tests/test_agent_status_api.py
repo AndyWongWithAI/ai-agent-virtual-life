@@ -34,7 +34,7 @@ def client_with_ctx():
     fake_world = MagicMock()
     fake_world.location_of = lambda aid: "李四家" if aid == "lisi" else "王五家"
     fake_world.snapshot = lambda aid: {
-        "status_bar": {"饱": 70, "累": 40, "孤独": 30, "快乐": 60},
+        "status_bar": {"hunger": 70, "fatigue": 40, "loneliness": 30, "happiness": 60},
         "location": "李四家" if aid == "lisi" else "王五家",
     }
     ctx = {

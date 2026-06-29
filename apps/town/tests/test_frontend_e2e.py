@@ -141,7 +141,11 @@ def test_command_rejects_empty_command():
 # --- 5. 状态面板(V2 任务 #84) ---
 
 def test_agent_status_returns_status_bar_dict():
-    """GET /api/agents/{id}/status 200 + status_bar 是 dict(4 项)+ summaries/events 列表"""
+    """GET /api/agents/{id}/status 200 + status_bar 是 dict(4 项)+ summaries/events 列表
+
+    任务 #114:status_bar key 是中文 label(饱/累/孤独/快乐),
+    额外返回 status_keys 字段(英文 enum,供 i18n 扩展)
+    """
     r = httpx.get(f"{E2E_BASE_URL}/api/agents/lisi/status", timeout=10)
     assert r.status_code == 200, f"status: {r.status_code}, body: {r.text[:200]}"
     data = r.json()
@@ -150,6 +154,13 @@ def test_agent_status_returns_status_bar_dict():
     assert isinstance(data["status_bar"], dict), \
         f"status_bar should be dict, got {type(data['status_bar'])}"
     assert len(data["status_bar"]) == 4, f"expected 4 status fields, got {data['status_bar']}"
+    # 中文 label 必须存在
+    for cn_label in ("饱", "累", "孤独", "快乐"):
+        assert cn_label in data["status_bar"], \
+            f"status_bar 缺中文 label '{cn_label}': {data['status_bar']}"
+    # 英文 enum 也必须有(任务 #114 契约)
+    assert "status_keys" in data
+    assert data["status_keys"] == ["hunger", "fatigue", "loneliness", "happiness"]
     # summaries + events 都是列表
     assert isinstance(data["recent_summaries"], list)
     assert isinstance(data["recent_events"], list)

@@ -29,13 +29,13 @@ class World:
             "now_str": self.clock.now_str(),
             "weekday": self.clock.weekday_cn(),
             "weather": "晴",  # MVP 先固定
-            # MVP 占位,后续接真实状态计算 — agent 每次 eat 饱+10 sleep 累-15 等等。
-            # 结构化(dict)而非字符串,便于前端可视化(I16 fix for V2 status panel)
+            # 4 维状态内部 key 用英文(stable),label 走 i18n(任务 #114)
+            # 真实计算在任务 #113,目前仍是占位值
             "status_bar": {
-                "饱": 70,
-                "累": 40,
-                "孤独": 30,
-                "快乐": 60,
+                "hunger": 70,
+                "fatigue": 40,
+                "loneliness": 30,
+                "happiness": 60,
             },
             "legal_targets": list(DEFAULT_LOCATIONS),  # AD1/AD7:I2 fix 单一事实源
         }

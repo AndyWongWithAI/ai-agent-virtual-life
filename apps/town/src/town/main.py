@@ -34,7 +34,7 @@ from pydantic import BaseModel
 from agent_behavior_orchestrator import TickScheduler
 from event_bus import Topic
 from memory_reflection import Event
-from virtual_world_engine import DEFAULT_LOCATIONS
+from virtual_world_engine import DEFAULT_LOCATIONS, LABELS_ZH, STATUS_KEYS
 
 from .bootstrap import bootstrap
 from . import metrics as m
@@ -361,11 +361,13 @@ async def agent_status(agent_id: str):
     """单个 agent 详细状态
 
     用于 V2 前端点击智能体后弹出的状态面板:
-    - status_bar(结构化 dict)+ 当前位置
+    - status_bar(结构化 dict,中文 label 为 key)+ 当前位置
     - 近期 LTM 反思摘要
     - 近期 STM 事件
 
-    I16 fix:status_bar 是 dict(I16 fix,前端可视化需要)
+    任务 #114:status_bar 内部 key 是英文(STATUS_KEYS),输出时按 LABELS_ZH
+    映射成中文 label,前端不变(继续用 Object.entries 取 label)。
+    status_keys 字段额外返回英文 enum 列表,供 i18n 扩展。
     """
     assert ctx is not None
     persona = next((p for p in ctx["personas"] if p["id"] == agent_id), None)
@@ -374,12 +376,15 @@ async def agent_status(agent_id: str):
     snap = ctx["world"].snapshot(agent_id)
     summaries = await ctx["ltm"].recent_summaries(agent_id, n=3)
     recent_events = await ctx["stm"].recent(agent_id, n=10)
+    # 内部英文 → 中文 label
+    status_bar_zh = {LABELS_ZH[k]: v for k, v in snap["status_bar"].items() if k in LABELS_ZH}
     return {
         "id": agent_id,
         "name": persona["name"],
         "persona": persona["persona"],
         "location": ctx["world"].location_of(agent_id),
-        "status_bar": snap["status_bar"],  # 现在是 dict
+        "status_bar": status_bar_zh,
+        "status_keys": list(STATUS_KEYS),  # 供 i18n 扩展的英文 enum
         "recent_summaries": [
             {"ts": s.period_end.isoformat(), "text": s.text} for s in summaries
         ],

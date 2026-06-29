@@ -4,6 +4,7 @@
 否则,组织 prompt + json_schema 调 LLM,解析返回 {reasoning, action}。
 """
 from llm_client import LLMClient
+from virtual_world_engine import format_for_prompt, LABELS_ZH
 
 from .actions import Action
 
@@ -11,7 +12,7 @@ SCHEMA = {"required": ["reasoning", "action"]}
 
 PROMPT_TEMPLATE = """你是 {name},一个虚拟小镇居民。当前:
 - 时间:{now_str} ({weekday})
-- 状态:{status_bar}
+- 状态:{status_bar}(4 维:饱/累/孤独/快乐,0-100,越低越好除快乐)
 - 位置:{location}
 - 邻接:{adjacency}
 - 天气:{weather}
@@ -37,10 +38,11 @@ class DecisionMaker:
                      user_command: str | None = None) -> Action:
         if forced_action is not None:
             return forced_action
-        # V2:status_bar 现在是 dict(World.snapshot 结构化输出),
-        # 内部 format 成字符串注入 LLM;str 仍接受,向后兼容。
+        # 任务 #114:status_bar 内部是 dict(英文 key:hunger/fatigue/loneliness/happiness),
+        # 用 status.format_for_prompt 转中文 label 后注入 prompt。
+        # 仍接受 str(向后兼容,旧调用者或测试用)
         if isinstance(status_bar, dict):
-            status_bar_str = ", ".join(f"{k} {v}" for k, v in status_bar.items())
+            status_bar_str = format_for_prompt(status_bar, lang="zh")
         else:
             status_bar_str = status_bar
         # V5:用户指令段(若有)

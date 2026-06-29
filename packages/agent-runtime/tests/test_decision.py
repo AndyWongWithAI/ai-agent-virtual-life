@@ -12,7 +12,7 @@ from agent_runtime.decision import DecisionMaker
 
 @pytest.mark.asyncio
 async def test_decision_maker_accepts_dict_status_bar():
-    """status_bar 是 dict 时也能 format 成字符串注入 prompt"""
+    """status_bar 是 dict(任务 #114 英文 key)时也能 format 成中文注入 prompt"""
     llm = MagicMock()
     captured = {}
 
@@ -24,13 +24,13 @@ async def test_decision_maker_accepts_dict_status_bar():
     dm = DecisionMaker(llm)
     action = await dm.decide(
         name="李四", now_str="2026-06-29 14:00", weekday="一",
-        status_bar={"饱": 70, "累": 40, "孤独": 30, "快乐": 60},
+        status_bar={"hunger": 70, "fatigue": 40, "loneliness": 30, "happiness": 60},
         location="李四家", adjacency=["客厅"], weather="晴",
         recent_summary="", forced_action=None, legal_targets=["李四家", "客厅"],
     )
-    # prompt 必须含 "饱 70" 这种格式
-    assert "饱" in captured["prompt"]
-    assert "70" in captured["prompt"]
+    # prompt 必须含 "饱 70" 这种中文 label 格式
+    assert "饱 70" in captured["prompt"], f"prompt should contain '饱 70', got: {captured['prompt'][:200]}"
+    assert "累 40" in captured["prompt"]
 
 
 @pytest.mark.asyncio
