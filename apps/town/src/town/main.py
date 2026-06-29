@@ -168,6 +168,8 @@ async def run_tick():
     """每个 tick:让 5 个 agent 各自 decide 一次,记录到 event_store + 推总线"""
     assert ctx is not None
     m.town_tick_total.inc()  # Phase 7:tick 计数
+    # 任务 #113:tick 开头对所有 agent 应用时间衰减(饿/累/孤独 涨,快乐略降)
+    ctx["world"].tick_decay()
     last_actions: dict[str, str] = {}
     for agent_id, agent in ctx["agents"].items():
         snap = ctx["world"].snapshot(agent_id)
@@ -194,6 +196,11 @@ async def run_tick():
         # I2 fix:用 DEFAULT_LOCATIONS 校验,消除硬编码
         if action.name == "go_to" and action.target in DEFAULT_LOCATIONS:
             ctx["world"].place(agent_id, action.target)
+        # 任务 #113:apply_action 根据动作名调整 4 维状态(eat 饱+ sleep 累- 等)
+        try:
+            ctx["world"].apply_action(agent_id, action.name)
+        except Exception:
+            logger.exception("world.apply_action failed for %s/%s", agent_id, action.name)
         await ctx["event_store"].append(
             agent_id=agent_id,
             kind="decision",
