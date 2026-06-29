@@ -43,7 +43,7 @@ jobs:
       service_name: "ai-agent-virtual-life"
       deploy_path: "/opt/services/ai-agent-virtual-life"
       compose_file: "infra/docker-compose.yml"
-      healthcheck_url: "http://127.0.0.1:8000/health"
+      healthcheck_url: "http://127.0.0.1:8001/health"
       arch_component: ""
       arch_platform_url: "https://arch.intelab.cn"
       git_ref: "master"
