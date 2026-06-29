@@ -5,7 +5,7 @@
 """
 import pytest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from memory_reflection.short_term import ShortTermMemory
 from memory_reflection.long_term import LongTermMemory
@@ -132,3 +132,74 @@ async def test_reflector_events_sorted_ascending_in_prompt():
     assert pos_E3 < pos_E2 < pos_E1, (
         f"events should be sorted ascending; got order: E3={pos_E3}, E2={pos_E2}, E1={pos_E1}"
     )
+
+
+@pytest.mark.asyncio
+async def test_maybe_reflect_publishes_to_bus():
+    """V6:maybe_reflect 末尾必须 publish Topic.MEMORY_REFLECT 事件到 bus"""
+    from memory_reflection import Reflector
+    from event_bus import Topic
+
+    llm = MagicMock(call=AsyncMock(return_value="张三最近比较累"))
+    redis = MagicMock(
+        get=AsyncMock(return_value=None),
+        set=AsyncMock(),
+        expire=AsyncMock(),
+    )
+    stm = MagicMock(
+        add=AsyncMock(),
+        recent=AsyncMock(
+            return_value=[
+                Event(agent_id="lisi", kind="decision", content="go to park", ts=datetime.now()),
+                Event(agent_id="lisi", kind="decision", content="talk to wangwu", ts=datetime.now()),
+                Event(agent_id="lisi", kind="decision", content="sleep", ts=datetime.now()),
+            ]
+        ),
+    )
+    ltm = MagicMock(add_summary=AsyncMock(), redis=redis)
+    bus = MagicMock(publish=AsyncMock())
+
+    reflector = Reflector(llm, stm, ltm)
+    # 强制 last_reflect 早于 6h 前,触发反思
+    with patch("memory_reflection.reflector.datetime") as mock_dt:
+        mock_dt.now.return_value = datetime(2026, 6, 29, 18, 0)
+        mock_dt.fromisoformat = datetime.fromisoformat
+        await reflector.maybe_reflect("lisi", bus=bus)
+
+    assert bus.publish.await_count == 1
+    args = bus.publish.call_args
+    assert args.args[0] == Topic.MEMORY_REFLECT
+    payload = args.args[1]
+    assert payload["agent_id"] == "lisi"
+    assert payload["text"] == "张三最近比较累"
+
+
+@pytest.mark.asyncio
+async def test_maybe_reflect_no_publish_when_bus_is_none():
+    """V6:bus=None 时(向后兼容)必须不 publish,不能 crash"""
+    from memory_reflection import Reflector
+
+    llm = MagicMock(call=AsyncMock(return_value="ok"))
+    redis = MagicMock(
+        get=AsyncMock(return_value=None),
+        set=AsyncMock(),
+        expire=AsyncMock(),
+    )
+    stm = MagicMock(
+        add=AsyncMock(),
+        recent=AsyncMock(
+            return_value=[
+                Event(agent_id="lisi", kind="decision", content="e1", ts=datetime.now()),
+                Event(agent_id="lisi", kind="decision", content="e2", ts=datetime.now()),
+                Event(agent_id="lisi", kind="decision", content="e3", ts=datetime.now()),
+            ]
+        ),
+    )
+    ltm = MagicMock(add_summary=AsyncMock(), redis=redis)
+    reflector = Reflector(llm, stm, ltm)
+    # 不传 bus,不能报错(正常触发反思但不发事件)
+    with patch("memory_reflection.reflector.datetime") as mock_dt:
+        mock_dt.now.return_value = datetime(2026, 6, 29, 18, 0)
+        mock_dt.fromisoformat = datetime.fromisoformat
+        result = await reflector.maybe_reflect("lisi")  # 无 bus 参数
+    assert result == "ok"

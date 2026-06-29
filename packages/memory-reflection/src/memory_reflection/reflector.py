@@ -63,7 +63,12 @@ class Reflector:
         except Exception:
             logger.exception("redis set last_reflect failed")
 
-    async def maybe_reflect(self, agent_id: str, now: datetime | None = None) -> str | None:
+    async def maybe_reflect(
+        self,
+        agent_id: str,
+        now: datetime | None = None,
+        bus=None,
+    ) -> str | None:
         now = now or datetime.now()
         last = await self._get_last(agent_id)
         if last and (now - last) < timedelta(hours=6):
@@ -103,4 +108,22 @@ class Reflector:
             )
         )
         await self._set_last(agent_id, now)
+        # V6:广播反思事件到 bus(让前端能收到),失败不 crash(tick_loop 必须继续)
+        if bus is not None:
+            try:
+                # local import 避免循环依赖(memory_reflection -> event_bus 单向)
+                from event_bus import Topic
+
+                await bus.publish(
+                    Topic.MEMORY_REFLECT,
+                    {
+                        "topic": Topic.MEMORY_REFLECT.value,
+                        "agent_id": agent_id,
+                        "period_start": period_start.isoformat(),
+                        "period_end": now.isoformat(),
+                        "text": summary_text,
+                    },
+                )
+            except Exception:
+                logger.exception("reflector publish failed for %s", agent_id)
         return summary_text

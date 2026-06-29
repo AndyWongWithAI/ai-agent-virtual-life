@@ -48,9 +48,6 @@ class Agent:
             forced_action=forced,
             legal_targets=world_snapshot.get("legal_targets", []),
         )
-        # C4 fix:反思失败不应拖垮本 tick,不让其他 agent 跟着停摆
-        try:
-            await self.reflector.maybe_reflect(self.agent_id)
-        except Exception:
-            logger.exception("reflector.maybe_reflect failed for %s", self.agent_id)
+        # V6:反思调度已上移到 town.main.run_tick 末尾(带 bus 引用),
+        # 这里不再触发(避免双重触发 + 拿不到 bus)。
         return action

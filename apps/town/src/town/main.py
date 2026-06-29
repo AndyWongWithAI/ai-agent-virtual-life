@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 
 from agent_behavior_orchestrator import TickScheduler
 from event_bus import Topic
+from memory_reflection import Event
 from virtual_world_engine import DEFAULT_LOCATIONS
 
 from .bootstrap import bootstrap
@@ -90,6 +91,7 @@ async def lifespan(_app: FastAPI):
     ctx["bus"].subscribe(Topic.AGENT_DECISION, _ws_broadcast)
     ctx["bus"].subscribe(Topic.DIALOGUE_MESSAGE, _ws_broadcast)
     ctx["bus"].subscribe(Topic.DIALOGUE_START, _ws_broadcast)
+    ctx["bus"].subscribe(Topic.MEMORY_REFLECT, _ws_broadcast)
 
     # C1 fix:保存 task handle,避免被 GC(同时 bus.run_forever 自带 while True 重连)
     bus_task = asyncio.create_task(ctx["bus"].run_forever(), name="bus-run-forever")
@@ -162,6 +164,17 @@ async def run_tick():
             kind="decision",
             content=f"{action.name} -> {action.target or '-'}",
         )
+        # V6:decision 同时 append 到 STM(Reflector 需要从这里读事件)
+        try:
+            await ctx["stm"].add(
+                Event(
+                    agent_id=agent_id,
+                    kind="decision",
+                    content=f"{action.name} -> {action.target or '-'}",
+                )
+            )
+        except Exception:
+            logger.exception("stm.add decision failed for %s", agent_id)
         await ctx["bus"].publish(
             Topic.AGENT_DECISION,
             {
@@ -186,6 +199,14 @@ async def run_tick():
                 location=loc,
             ):
                 await run_dialogue(a_id, b_id, loc)
+
+    # V6:tick 末尾给每个 agent 跑一次反思检查,触发条件由 Reflector 内部判断(>6h)
+    # 失败必须 try/except,不能 crash tick_loop(其他 agent 跟着停摆)
+    for agent_id in ctx["agents"]:
+        try:
+            await ctx["reflector"].maybe_reflect(agent_id, bus=ctx["bus"])
+        except Exception:
+            logger.exception("reflector.maybe_reflect failed for %s", agent_id)
 
 
 async def run_dialogue(a_id: str, b_id: str, location: str):
@@ -217,6 +238,17 @@ async def run_dialogue(a_id: str, b_id: str, location: str):
     for who, content in msgs:
         speaker_id = a_id if who == a.name else b_id
         await ctx["event_store"].add_dialogue_message(did, speaker_id, content)
+        # V6:dialogue message 同时 append 到 STM(Reflector 需要 dialogue 事件)
+        try:
+            await ctx["stm"].add(
+                Event(
+                    agent_id=speaker_id,
+                    kind="dialogue",
+                    content=content,
+                )
+            )
+        except Exception:
+            logger.exception("stm.add dialogue failed for %s", speaker_id)
         await ctx["bus"].publish(
             Topic.DIALOGUE_MESSAGE,
             {
