@@ -61,6 +61,9 @@ ws_clients: list[WebSocket] = []
 # V5:用户指令队列,agent_id -> [cmd1, cmd2, ...]
 # 模块级 dict(town 单进程 OK;多进程会不一致,见 brief 风险)
 commands: dict[str, list[str]] = defaultdict(list)
+# 任务 #131(P0 暂停):模块级 flag,_paused 时 run_tick 整轮跳过(tick_decay + decide + event
+# + bus publish 都不跑),状态原地冻结,指令照常排队,resume 后下次 tick 自动恢复。
+_paused: bool = False
 
 
 @asynccontextmanager
@@ -166,6 +169,10 @@ async def tick_loop():
 
 async def run_tick():
     """每个 tick:让 5 个 agent 各自 decide 一次,记录到 event_store + 推总线"""
+    # 任务 #131(P0):暂停守卫 — _paused=True 时整轮跳过,world/e/bus/state 全静默。
+    # 放在 inc metrics 之前,免得 pause 期也涨 counters(Grafana 看到的「业务量=0」就是真实信号)。
+    if _paused:
+        return
     assert ctx is not None
     m.town_tick_total.inc()  # Phase 7:tick 计数
     # 任务 #113:tick 开头对所有 agent 应用时间衰减(饿/累/孤独 涨,快乐略降)
@@ -443,7 +450,58 @@ async def list_events(limit: int = 30):
 # 不再直接展示给用户。用户面板走实时状态(/api/agents + 4 维 + 当前动作)。
 
 
-@app.websocket("/ws")
+# --- 任务 #131(P0):暂停/启动端点 + 控制广播 ---
+
+async def _broadcast_control(kind: str) -> None:
+    """任务 #131:把暂停/恢复事件直接 broadcast 给所有 WS 客户端。
+
+    绕过 event_bus(避免增加 topic 类型)— town 控制信号是 town 自治事件,
+    不属于 L1/L2 业务通路。失败客户端自动从 ws_clients 摘除(同 _ws_broadcast)。
+    """
+    payload = {"topic": "town.control", "kind": kind, "paused": _paused}
+    dead: list[WebSocket] = []
+    results = await asyncio.gather(
+        *[client.send_json(payload) for client in ws_clients],
+        return_exceptions=True,
+    )
+    for client, res in zip(list(ws_clients), results):
+        if isinstance(res, Exception):
+            dead.append(client)
+    for d in dead:
+        if d in ws_clients:
+            ws_clients.remove(d)
+
+
+@app.post("/api/pause")
+async def pause_town():
+    """任务 #131(P0 暂停):切到暂停态。已暂停返 200 不重复触发 broadcast。"""
+    global _paused
+    if not _paused:
+        _paused = True
+        logger.info("town paused")
+        await _broadcast_control("paused")
+    return {"paused": True}
+
+
+@app.post("/api/resume")
+async def resume_town():
+    """任务 #131(P0 暂停):从暂停恢复。tick_loop 下一轮自然醒,run_tick 自动跑。"""
+    global _paused
+    if _paused:
+        _paused = False
+        logger.info("town resumed")
+        await _broadcast_control("resumed")
+    return {"paused": False}
+
+
+@app.get("/api/status")
+async def town_status():
+    """任务 #131(P0 暂停):前端 init / WS 重连时拉当前运行态。"""
+    return {
+        "paused": _paused,
+        "agents": len(ctx["agents"]) if ctx else 0,
+        "ts": datetime.now().isoformat(),
+    }
 
 
 @app.websocket("/ws")

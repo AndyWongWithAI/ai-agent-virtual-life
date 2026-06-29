@@ -1,5 +1,36 @@
 body { font-family: "PingFang SC", sans-serif; margin: 20px; background: #fafafa; }
 h1 { color: #333; }
+#paused-badge {
+  display: inline-block;
+  margin-left: 12px;
+  padding: 2px 8px;
+  background: #f0ad4e;
+  color: #fff;
+  font-size: 14px;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+#paused-badge.hidden { display: none; }
+#pause-toggle {
+  display: inline-block;
+  margin-left: 12px;
+  padding: 4px 12px;
+  font-size: 13px;
+  border: 1px solid #4ECDC4;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+}
+#pause-toggle.paused {
+  background: #f0ad4e;
+  color: #fff;
+  border-color: #f0ad4e;
+}
+#pause-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 #clock { font-size: 18px; color: #666; margin-bottom: 10px; }
 #map-container { border: 2px solid #ccc; display: inline-block; background: #fff; }
 canvas { display: block; }

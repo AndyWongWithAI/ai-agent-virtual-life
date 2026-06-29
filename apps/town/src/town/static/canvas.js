@@ -19,6 +19,50 @@ let agentColors = {};  // agent_id -> color
 let currentAgents = [];  // 任务 #127:5 agent 实时状态 [{id, name, location, current_action, status_bar}]
 let agentRenderPositions = {};  // V2:点击检测用 {agent_id: {x, y, radius}}
 
+// 任务 #131(P0 暂停):暂停 toggle + WS 控制消息处理
+async function loadPauseStatus() {
+  try {
+    const resp = await fetch("/api/status");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    applyPausedState(data.paused);
+  } catch (e) {
+    console.warn("[init] /api/status failed:", e);
+  }
+}
+
+function applyPausedState(paused) {
+  const btn = document.getElementById("pause-toggle");
+  const badge = document.getElementById("paused-badge");
+  if (btn) {
+    btn.textContent = paused ? "▶ 启动" : "⏸ 暂停";
+    btn.classList.toggle("paused", paused);
+  }
+  if (badge) badge.classList.toggle("hidden", !paused);
+  addEvent(paused ? "⏸ town 已暂停(tick 不跑,状态冻结)" : "▶ town 已启动");
+}
+
+async function togglePause() {
+  const btn = document.getElementById("pause-toggle");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    // 读当前状态决定动作 /api/status 在前端异步;直接用 applyPausedState 的反相位
+    const isPaused = btn.classList.contains("paused");
+    const path = isPaused ? "/api/resume" : "/api/pause";
+    const resp = await fetch(path, { method: "POST" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    // 控制 broadcast 会发 town.control,WS handler 也会更新 UI,
+    // 双保险:这里立即 reflect state
+    const data = await resp.json();
+    applyPausedState(data.paused);
+  } catch (e) {
+    addEvent("❌ 暂停切换失败:" + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function init() {
   let agents;
   try {
@@ -37,10 +81,13 @@ async function init() {
     agentColors[a.id] = AGENT_COLORS[i % AGENT_COLORS.length];
   });
   draw();
-  // 任务 #125(Bug4) + 任务 #127(B1):启动加载历史事件 + 实时状态面板
-  await Promise.all([loadHistoricalEvents(), loadCurrentState()]);
+  // 任务 #125(Bug4) + 任务 #127(B1) + 任务 #131(P0 暂停):启动加载
+  await Promise.all([loadHistoricalEvents(), loadCurrentState(), loadPauseStatus()]);
   connectWS();
   await initCommandPanel();
+  // 任务 #131(P0 暂停):按钮点击切换。DOMContentLoaded 时绑定即可,这里 init 同步调一次
+  const pauseBtn = document.getElementById("pause-toggle");
+  if (pauseBtn) pauseBtn.addEventListener("click", togglePause);
 }
 
 // 任务 #125(Bug4):init 拉 /api/events,append 到 events div(asc 顺序,新事件 prepend 到顶部对齐)
@@ -291,6 +338,11 @@ function connectWS() {
       }
       // 任务 #127(B):memory.reflect 主题保留但前端不再渲染(产品决定完全去掉反思区);
       // 反思仍由 Reflector 写入 LTM,继续服务 LLM decision.prompt 的 recent_summary。
+      // 任务 #131(P0 暂停):town.control 不绕 bus,直接 broadcast,togglePaused 同步 UI
+      case "town.control": {
+        applyPausedState(msg.paused);
+        break;
+      }
       default:
         // 忽略未知 topic,不刷屏
         break;
