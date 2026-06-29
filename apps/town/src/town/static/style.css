@@ -220,3 +220,19 @@ canvas { display: block; }
   color: #888;
   margin-left: 4px;
 }
+
+/* 阶段 3:配置错误 toast */
+#config-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 380px;
+  background: #f0ad4e;
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 6px;
+  max-width: 320px;
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  z-index: 11;
+}
+#config-toast.hidden { display: none; }

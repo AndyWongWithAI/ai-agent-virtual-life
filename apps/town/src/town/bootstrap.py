@@ -1,16 +1,18 @@
 """town bootstrap:装配所有 L1/L2 组件,返回运行时上下文
 
 这是 town 服务的唯一启动入口。装配流程:
-  1. 加载 personas.yaml(5 个 agent 的人设)
+  1. 加载 personas.yaml + locations.yaml(阶段 3 / REQ-7cfc9696)
+     — 自定义 config_dir 优先(TOWN_CONFIG_DIR env),有错则回退到 base 默认
   2. 基础设施:LLMClient(读 env var)、EventBus(Redis)、EventStore(Postgres)
   3. L1 组件:ShortTermMemory、LongTermMemory、Reflector
   4. L2 组件:World、DialogueTrigger、DialogueGenerator
   5. 组装 5 个 Agent 实例,各放到 world 起始位置
 
 返回 dict(称 ctx),由 main.py / FastAPI 路由 / WebSocket 共享。
+阶段 3 额外字段:locations / config_source / config_errors,供前端 toast + locations 端点。
 """
+import logging
 import os
-import yaml
 from pathlib import Path
 
 from dotenv import load_dotenv  # uv add python-dotenv
@@ -23,8 +25,15 @@ from virtual_world_engine import World
 from event_memory_system import EventStore
 from dialogue_generator import DialogueTrigger, DialogueGenerator
 
+from .config_loader import load_config
+
 # 加载 .env(放在 town/ 目录,即 apps/town/.env)
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
+logger = logging.getLogger(__name__)
+
+# 默认 base 配置目录(随仓库提交,保证 demo 一定跑得起来)
+_BASE_CONFIG_DIR = Path(__file__).parent / "config" / "base"
 
 
 async def bootstrap() -> dict:
@@ -37,10 +46,36 @@ async def bootstrap() -> dict:
         MINIMAX_BASE_URL          — MiniMax OpenAI 兼容端点
         MINIMAX_MODEL             — 模型名(默认 MiniMax-M3)
         LLM_DAILY_BUDGET_CNY      — 日预算,单位 CNY
+        TOWN_CONFIG_DIR           — 自定义 YAML 配置目录(默认走内置 base)
     """
-    # 1. personas
-    personas_path = Path(__file__).parent / "personas.yaml"
-    personas = yaml.safe_load(personas_path.read_text(encoding="utf-8"))["agents"]
+    # 1. 加载 personas + locations(阶段 3)
+    #    优先级:TOWN_CONFIG_DIR(自定义)→ base(默认)
+    #    errors 非空 → logger.warning + 回退 base;ctx["config_source"]="base"
+    custom_dir = os.getenv("TOWN_CONFIG_DIR")
+    personas, locations, errors = [], [], []
+    config_source = "base"
+    if custom_dir:
+        custom_path = Path(custom_dir)
+        personas, locations, errors = load_config(custom_path)
+        if errors:
+            logger.warning(
+                "[town] 自定义配置 %s 有 %d 条错误,回退到 base 默认:",
+                custom_path, len(errors),
+            )
+            for e in errors:
+                logger.warning("  - %s", e["message"])
+            personas, locations, errors = load_config(_BASE_CONFIG_DIR)
+            config_source = "base"  # 回退
+        else:
+            config_source = "custom"
+    else:
+        personas, locations, errors = load_config(_BASE_CONFIG_DIR)
+        config_source = "base"
+    if not personas or not locations:
+        # 极端兜底:连 base 都坏,直接抛,不让服务带着空配置启动
+        raise RuntimeError(
+            f"base 配置损坏,无法启动。errors={errors}"
+        )
 
     # 2. 基础设施
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -96,4 +131,8 @@ async def bootstrap() -> dict:
         "dialogue_gen": dialogue_gen,
         "agents": agents,
         "personas": personas,
+        # 阶段 3:配置相关字段供 /api/locations + /api/config-status 使用
+        "locations": locations,
+        "config_source": config_source,
+        "config_errors": errors,
     }

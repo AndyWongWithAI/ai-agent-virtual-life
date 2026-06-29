@@ -201,7 +201,9 @@ async def run_tick():
         last_actions[agent_id] = action.name
         m.town_decisions_total.labels(action=action.name).inc()  # Phase 7
         # I2 fix:用 DEFAULT_LOCATIONS 校验,消除硬编码
-        if action.name == "go_to" and action.target in DEFAULT_LOCATIONS:
+        # 阶段 3:locations 来源已切到 YAML,运行时校验用 ctx["locations"] 的 name 集合
+        _valid_locs = {loc["name"] for loc in ctx.get("locations", []) if isinstance(loc, dict)}
+        if action.name == "go_to" and (action.target in DEFAULT_LOCATIONS or action.target in _valid_locs):
             ctx["world"].place(agent_id, action.target)
         # 任务 #113:apply_action 根据动作名调整 4 维状态(eat 饱+ sleep 累- 等)
         # 任务 #127(B1):传 Action 对象(含 target),World 记最新动作给前端近况面板用
@@ -344,6 +346,33 @@ async def list_agents():
 class CommandRequest(BaseModel):
     agent_id: str
     command: str
+
+
+# --- 阶段 3 (REQ-7cfc9696):配置 + locations 端点 ---
+
+@app.get("/api/locations")
+async def list_locations():
+    """返回当前生效的地点列表(从 YAML 加载)。
+
+    阶段 3:T4 前端 canvas.js 用它派生 LOCATIONS,代替硬编码。
+    每条形如:{name, x, y, color, adjacency: [name, ...]}
+    """
+    assert ctx is not None
+    return {"locations": ctx.get("locations", [])}
+
+
+@app.get("/api/config-status")
+async def config_status():
+    """阶段 3 §4.4:报告当前配置源 + 错误列表,供前端 toast 使用。
+
+    Returns:
+        {"source": "custom"|"base", "errors": [...]}
+    """
+    assert ctx is not None
+    return {
+        "source": ctx.get("config_source", "base"),
+        "errors": ctx.get("config_errors", []),
+    }
 
 
 @app.post("/api/command")

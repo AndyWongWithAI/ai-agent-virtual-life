@@ -1,0 +1,37 @@
+# apps/town/src/town/config/base/locations.yaml
+# 阶段 3 — 默认 base locations(从 virtual_world_engine.DEFAULT_LOCATIONS 提炼)
+# 客户演示可在自定义 config_dir 里覆盖 + 增加新地点。
+locations:
+  - name: "李四家"
+    x: 100
+    y: 100
+    color: "#FFD700"
+    adjacency:
+      - "客厅"
+  - name: "王五家"
+    x: 300
+    y: 100
+    color: "#87CEEB"
+    adjacency:
+      - "客厅"
+      - "公园"
+  - name: "客厅"
+    x: 200
+    y: 250
+    color: "#98FB98"
+    adjacency:
+      - "李四家"
+      - "王五家"
+      - "厨房"
+  - name: "厨房"
+    x: 350
+    y: 300
+    color: "#FFA07A"
+    adjacency:
+      - "客厅"
+  - name: "公园"
+    x: 600
+    y: 350
+    color: "#90EE90"
+    adjacency:
+      - "王五家"
