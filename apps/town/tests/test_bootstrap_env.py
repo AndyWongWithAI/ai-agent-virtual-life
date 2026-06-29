@@ -22,7 +22,12 @@ def test_dotenv_path_resolves_to_apps_town():
     # parent.parent = .../apps/town/src
     # parent.parent.parent = .../apps/town
     expected_path = TOWN_DIR / ".env"
-    assert expected_path.exists(), f"期望 .env 在 {expected_path}"
+    # .env 是真实部署配置,被 .gitignore 排除,CI runner 不存在。
+    # 用 .env.example(同目录,tracked in git)作存在性代理,足以证明目录正确,
+    # 然后单独断言 bootstrap.py 的派生路径。
+    assert (TOWN_DIR / ".env.example").exists(), (
+        f"期望 .env.example 在 {TOWN_DIR / '.env.example'}"
+    )
     # 验证 bootstrap.py 当前路径
     bootstrap_file = TOWN_DIR / "src" / "town" / "bootstrap.py"
     derived_path = bootstrap_file.parent.parent.parent / ".env"
