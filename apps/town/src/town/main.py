@@ -275,6 +275,41 @@ async def list_agents():
     ]
 
 
+@app.get("/api/agents/{agent_id}/status")
+async def agent_status(agent_id: str):
+    """单个 agent 详细状态
+
+    用于 V2 前端点击智能体后弹出的状态面板:
+    - status_bar(结构化 dict)+ 当前位置
+    - 近期 LTM 反思摘要
+    - 近期 STM 事件
+
+    I16 fix:status_bar 是 dict(I16 fix,前端可视化需要)
+    """
+    assert ctx is not None
+    persona = next((p for p in ctx["personas"] if p["id"] == agent_id), None)
+    if persona is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"unknown agent: {agent_id}")
+    snap = ctx["world"].snapshot(agent_id)
+    summaries = await ctx["ltm"].recent_summaries(agent_id, n=3)
+    recent_events = await ctx["stm"].recent(agent_id, n=10)
+    return {
+        "id": agent_id,
+        "name": persona["name"],
+        "persona": persona["persona"],
+        "location": ctx["world"].location_of(agent_id),
+        "status_bar": snap["status_bar"],  # 现在是 dict
+        "recent_summaries": [
+            {"ts": s.period_end.isoformat(), "text": s.text} for s in summaries
+        ],
+        "recent_events": [
+            {"ts": e.ts.isoformat(), "kind": e.kind, "content": e.content}
+            for e in recent_events
+        ],
+    }
+
+
 @app.websocket("/ws")
 async def ws(ws: WebSocket):
     """WebSocket:订阅 AGENT_DECISION / DIALOGUE_MESSAGE,推送给客户端"""

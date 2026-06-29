@@ -30,14 +30,20 @@ class DecisionMaker:
     def __init__(self, llm: LLMClient):
         self.llm = llm
 
-    async def decide(self, *, name: str, now_str: str, weekday: str, status_bar: str,
+    async def decide(self, *, name: str, now_str: str, weekday: str, status_bar: "str | dict",
                      location: str, adjacency: list[str], weather: str,
                      recent_summary: str, forced_action: Action | None,
                      legal_targets: list[str] | None = None) -> Action:
         if forced_action is not None:
             return forced_action
+        # V2:status_bar 现在是 dict(World.snapshot 结构化输出),
+        # 内部 format 成字符串注入 LLM;str 仍接受,向后兼容。
+        if isinstance(status_bar, dict):
+            status_bar_str = ", ".join(f"{k} {v}" for k, v in status_bar.items())
+        else:
+            status_bar_str = status_bar
         prompt = PROMPT_TEMPLATE.format(
-            name=name, now_str=now_str, weekday=weekday, status_bar=status_bar,
+            name=name, now_str=now_str, weekday=weekday, status_bar=status_bar_str,
             location=location, adjacency=", ".join(adjacency) or "无",
             weather=weather, recent_summary=recent_summary or "无",
             legal_targets="、".join(legal_targets) if legal_targets else "(无限制)",

@@ -17,6 +17,7 @@ let agentPositions = {};  // agent_id -> location
 let agentNames = {};  // agent_id -> name
 let agentColors = {};  // agent_id -> color
 let memorySummaries = [];  // 最近 5 条 {ts, agent_id, text}
+let agentRenderPositions = {};  // V2:点击检测用 {agent_id: {x, y, radius}}
 
 async function init() {
   let agents;
@@ -41,6 +42,7 @@ async function init() {
 
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  agentRenderPositions = {};  // V2:每次重绘清空
 
   // 画地点
   for (const [name, loc] of Object.entries(LOCATIONS)) {
@@ -54,19 +56,24 @@ function draw() {
     ctx.fillText(name, loc.x, loc.y + 5);
   }
 
-  // 画 agent
+  // 画 agent(V2:同时记录点击坐标)
   for (const [id, loc_name] of Object.entries(agentPositions)) {
     const loc = LOCATIONS[loc_name];
     if (!loc) continue;
+    const x = loc.x;
+    const y = loc.y - 40;
+    const radius = 12;
     ctx.beginPath();
-    ctx.arc(loc.x, loc.y - 40, 12, 0, 2 * Math.PI);
+    ctx.arc(x, y, radius, 0, 2 * Math.PI);
     ctx.fillStyle = agentColors[id];
     ctx.fill();
     ctx.strokeStyle = "#000";
     ctx.stroke();
     ctx.fillStyle = "#000";
     ctx.font = "11px sans-serif";
-    ctx.fillText(agentNames[id], loc.x, loc.y - 50);
+    ctx.fillText(agentNames[id], x, y - 18);
+    // 记录渲染坐标(给点击用)
+    agentRenderPositions[id] = { x, y, radius };
   }
 }
 
@@ -151,5 +158,100 @@ function connectWS() {
 setInterval(() => {
   clockEl.textContent = "现在: " + new Date().toLocaleString("zh-CN");
 }, 1000);
+
+// V2:点击 canvas 检测是否命中 agent,命中弹面板;空白区域关闭面板
+canvas.addEventListener("click", async (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+  for (const [id, pos] of Object.entries(agentRenderPositions)) {
+    const dx = cx - pos.x;
+    const dy = cy - pos.y;
+    if (dx * dx + dy * dy <= pos.radius * pos.radius) {
+      await showAgentPanel(id);
+      return;
+    }
+  }
+  // 没点中 agent → 关闭面板
+  hideAgentPanel();
+});
+
+async function showAgentPanel(agentId) {
+  const panel = document.getElementById("agent-panel");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  try {
+    const resp = await fetch(`/api/agents/${encodeURIComponent(agentId)}/status`);
+    if (!resp.ok) throw new Error(`/api/agents/${agentId}/status ${resp.status}`);
+    const data = await resp.json();
+    renderAgentPanel(data);
+  } catch (err) {
+    addEvent("⚠️ 拉取 agent 状态失败:" + err.message);
+    panel.classList.add("hidden");
+  }
+}
+
+function hideAgentPanel() {
+  const panel = document.getElementById("agent-panel");
+  if (panel) panel.classList.add("hidden");
+}
+
+document.getElementById("agent-panel-close")?.addEventListener("click", hideAgentPanel);
+
+function renderAgentPanel(data) {
+  // name / persona / location — textContent 防 XSS
+  document.getElementById("agent-panel-name").textContent = data.name;
+  document.getElementById("agent-panel-persona").textContent = data.persona;
+  document.getElementById("agent-panel-location").textContent = `📍 ${data.location}`;
+
+  // status_bar 是 dict {饱: 70, 累: 40, ...}
+  const statusEl = document.getElementById("agent-panel-status");
+  statusEl.innerHTML = "";
+  for (const [label, value] of Object.entries(data.status_bar)) {
+    const item = document.createElement("div");
+    item.className = "status-item";
+    item.innerHTML =
+      `<div class="label"></div>` +
+      `<div class="value"></div>` +
+      `<div class="status-bar-bg"><div class="status-bar-fill"></div></div>`;
+    item.querySelector(".label").textContent = label;
+    item.querySelector(".value").textContent = value;
+    const fill = item.querySelector(".status-bar-fill");
+    fill.style.width = `${Math.max(0, Math.min(100, value))}%`;
+    statusEl.appendChild(item);
+  }
+
+  // summaries
+  const sumEl = document.getElementById("agent-panel-summaries");
+  sumEl.innerHTML = "";
+  if (!data.recent_summaries.length) {
+    sumEl.textContent = "(暂无反思摘要)";
+  } else {
+    for (const s of data.recent_summaries) {
+      const div = document.createElement("div");
+      div.className = "summary-item";
+      const ts = new Date(s.ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      div.innerHTML = `<span class="ts">[${ts}]</span><span class="text"></span>`;
+      div.querySelector(".text").textContent = s.text;
+      sumEl.appendChild(div);
+    }
+  }
+
+  // events
+  const evEl = document.getElementById("agent-panel-events");
+  evEl.innerHTML = "";
+  if (!data.recent_events.length) {
+    evEl.textContent = "(暂无事件)";
+  } else {
+    for (const ev of data.recent_events) {
+      const div = document.createElement("div");
+      div.className = "event-item";
+      const ts = new Date(ev.ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+      div.innerHTML = `<span class="ts">[${ts}]</span><span class="text"></span>`;
+      div.querySelector(".text").textContent = `[${ev.kind}] ${ev.content}`;
+      evEl.appendChild(div);
+    }
+  }
+}
 
 init();

@@ -51,3 +51,70 @@ canvas { display: block; }
   margin-top: 4px;
   color: #333;
 }
+
+/* V2:点击智能体弹出的左侧状态面板 */
+#agent-panel {
+  position: fixed;
+  left: 16px;
+  top: 16px;
+  width: 360px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid #888;
+  border-radius: 8px;
+  padding: 14px 18px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  font-size: 13px;
+  z-index: 20;
+}
+#agent-panel.hidden { display: none; }
+#agent-panel-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+}
+#agent-panel h3 { margin: 0 0 6px 0; }
+#agent-panel h4 {
+  margin: 12px 0 6px 0;
+  font-size: 13px;
+  color: #444;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 2px;
+}
+#agent-panel-persona { color: #555; font-size: 12px; font-style: italic; }
+#agent-panel-location { font-size: 12px; color: #333; margin-top: 4px; }
+#agent-panel-status { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.status-item {
+  background: #f0f8ff;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.status-item .label { font-size: 11px; color: #666; }
+.status-item .value { font-size: 16px; font-weight: bold; }
+.status-bar-bg {
+  height: 6px;
+  background: #ddd;
+  border-radius: 3px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+.status-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4ECDC4, #45B7D1);
+  border-radius: 3px;
+}
+.summary-item, .event-item {
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  background: #f9f9f9;
+  border-left: 3px solid #4ECDC4;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.summary-item .ts, .event-item .ts { font-size: 11px; color: #888; margin-right: 4px; }

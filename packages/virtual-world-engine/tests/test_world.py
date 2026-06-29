@@ -29,3 +29,18 @@ def test_snapshot_exposes_legal_targets():
     # 必须是 DEFAULT_LOCATIONS 的完整副本
     assert set(s["legal_targets"]) == set(DEFAULT_LOCATIONS)
     assert len(s["legal_targets"]) == len(DEFAULT_LOCATIONS)
+
+
+def test_snapshot_status_bar_is_dict():
+    """snapshot 的 status_bar 必须是 dict,前端可视化需要结构化(V2 task #84)"""
+    w = World()
+    w.place("lisi", "李四家")
+    snap = w.snapshot("lisi")
+    assert isinstance(snap["status_bar"], dict)
+    assert "饱" in snap["status_bar"]
+    assert "累" in snap["status_bar"]
+    assert "孤独" in snap["status_bar"]
+    assert "快乐" in snap["status_bar"]
+    # 4 个值都是 0-100 整数
+    for v in snap["status_bar"].values():
+        assert 0 <= v <= 100
