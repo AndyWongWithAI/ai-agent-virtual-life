@@ -266,3 +266,84 @@ async def test_think_close_tag_must_be_last_occurrence():
         )
     assert result["reasoning"] == "最终决策"
     await client.aclose()
+
+
+# === P3 #109:截断 JSON 自动修复(town 部署发现的偶发 LLM bug) ===
+# 现象:town stdout 出现 "LLM JSON parse fail: ... raw={'reasoning':'刚吃完早饭,...孤独,"
+# 根因:MiniMax M3 max_tokens 截断 → JSON 缺 closing brace
+# 修法:解析失败时,尝试修复模式 1)补 closing brace;2)移除 think 残片
+
+
+@pytest.mark.asyncio
+async def test_repair_unclosed_brace_succeeds():
+    """P3:JSON 缺 closing brace(被截断)时,自动补 brace 后成功解析"""
+    client = LLMClient(
+        api_key="test", redis_url=TEST_REDIS_URL, daily_budget_cny=10.0,
+    )
+    # 模拟 max_tokens 截断,JSON 没闭合
+    truncated = '{"reasoning":"刚吃完早饭,有点累","action":{"name":"idle","target":null,"params":{}}'
+    with _patch_record(client), \
+         patch.object(client, "_raw_call", AsyncMock(return_value=(truncated, 0.001))):
+        result = await client.call(
+            [{"role": "user", "content": "hi"}],
+            json_schema={"required": ["reasoning", "action"]},
+        )
+    assert result["reasoning"] == "刚吃完早饭,有点累"
+    assert result["action"]["name"] == "idle"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repair_strips_think_tag_residue():
+    """P3:think 标签后没 </think> 但有 JSON,清理残片后解析"""
+    client = LLMClient(
+        api_key="test", redis_url=TEST_REDIS_URL, daily_budget_cny=10.0,
+    )
+    # 模拟 think 标签未闭合 + JSON 一起
+    messy = "<think>我需要决策,张三刚出门看到我</think>\n" \
+            '{"reasoning":"打招呼","action":{"name":"talk_to","target":"张三","params":{}}}'
+    with _patch_record(client), \
+         patch.object(client, "_raw_call", AsyncMock(return_value=(messy, 0.001))):
+        result = await client.call(
+            [{"role": "user", "content": "hi"}],
+            json_schema={"required": ["reasoning", "action"]},
+        )
+    assert result["reasoning"] == "打招呼"
+    assert result["action"]["target"] == "张三"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repair_fails_with_clear_error_when_unrecoverable():
+    """P3:修复模式全部失败时,ValueError 错误信息必须含 raw 文本(可诊断)"""
+    client = LLMClient(
+        api_key="test", redis_url=TEST_REDIS_URL, daily_budget_cny=10.0,
+    )
+    # 完全是垃圾
+    garbage = "今天天气真好啊,适合出门散步呢"
+    with _patch_record(client), \
+         patch.object(client, "_raw_call", AsyncMock(return_value=(garbage, 0.001))):
+        with pytest.raises(ValueError, match="LLM JSON parse fail"):
+            await client.call(
+                [{"role": "user", "content": "hi"}],
+                json_schema={"required": ["reasoning", "action"]},
+            )
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repair_nested_unclosed_brace():
+    """P3:nested JSON 缺多个 closing brace 时,也要能补齐(LLM 截断深嵌套)"""
+    client = LLMClient(
+        api_key="test", redis_url=TEST_REDIS_URL, daily_budget_cny=10.0,
+    )
+    # 截断到 action.name,缺 3 个 }
+    truncated = '{"reasoning":"饿","action":{"name":"eat","target":null,"params":{}}'
+    with _patch_record(client), \
+         patch.object(client, "_raw_call", AsyncMock(return_value=(truncated, 0.001))):
+        result = await client.call(
+            [{"role": "user", "content": "hi"}],
+            json_schema={"required": ["reasoning", "action"]},
+        )
+    assert result["action"]["name"] == "eat"
+    await client.aclose()

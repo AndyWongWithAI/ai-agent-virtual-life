@@ -126,6 +126,23 @@ class LLMClient:
                     assert k in parsed, f"Missing key {k}"
                 return parsed
             except (json.JSONDecodeError, AssertionError) as e:
+                # P3 #109:MiniMax M3 偶发 max_tokens 截断 → JSON 缺 closing brace,
+                # 尝试修复模式 1)补 closing brace;2)剥 think 残片;
+                # 修复成功就 silent recover,失败才 raise(诊断信息含 raw)
+                original_error = str(e)
+                repaired_text = _try_repair_json(text)
+                if repaired_text is not None:
+                    try:
+                        parsed = json.loads(repaired_text)
+                        for k in json_schema.get("required", []):
+                            assert k in parsed, f"Missing key {k}"
+                        logger.warning(
+                            "LLM JSON repair succeed: %s → ok; raw_was=%r",
+                            original_error, text[:200],
+                        )
+                        return parsed
+                    except (json.JSONDecodeError, AssertionError):
+                        pass  # 修复失败,fall through 抛原始错
                 raise ValueError(f"LLM JSON parse fail: {e}; raw={text[:200]}")
         return text
 
@@ -133,3 +150,54 @@ class LLMClient:
         """关闭资源(Redis 连接 + OpenAI HTTP 连接池)"""
         await self.redis.aclose()
         await self.client.close()
+
+
+def _try_repair_json(text: str) -> str | None:
+    """P3 #109 修复策略:截断或 think 残片时,尝试补 closing brace
+
+    返回修复后文本,失败返回 None(由 caller 决定是否 raise)。
+
+    修复模式:
+    1. 找到首个 { 起点,忽略前面所有 think 残片/自然语言
+    2. 计算 opening/closing brace 差,补上缺的 closing brace
+    3. 找到完整 JSON 段(到最后一个 } 闭合)
+
+    边界:
+    - text 中含其他 { } 字符串(如 {"a": "{b}"}):brace count 仍平衡,算法不破
+    - text 完全是垃圾:brace count ≤ 0,返回 None
+    - 截断在 " 字符串中:brace count 不平衡但补 brace 也救不回来,返回 None
+    """
+    if not text:
+        return None
+    # 1. 找首个 { 起点
+    start = text.find("{")
+    if start < 0:
+        return None
+    text = text[start:]
+    # 2. 算 brace 差(忽略字符串内的 brace)
+    open_count = 0
+    close_count = 0
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            open_count += 1
+        elif ch == "}":
+            close_count += 1
+    if open_count <= close_count:
+        # 平衡 / 多 close(异常 JSON),修不了
+        return None
+    missing = open_count - close_count
+    # 3. 补 closing brace
+    return text + "}" * missing

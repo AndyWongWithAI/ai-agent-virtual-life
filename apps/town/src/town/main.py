@@ -38,6 +38,17 @@ from virtual_world_engine import DEFAULT_LOCATIONS
 
 from .bootstrap import bootstrap
 
+# I17 fix(P3 #109):logging.basicConfig 必须在模块顶部(import 时即生效),
+# 否则 uvicorn 启动走 `app` 入口时,__main__ 块不会执行,所有 logger.exception
+# 只进 stderr 不带 timestamp/level,生产排查时 docker logs 显示为"无头案"。
+# 配置为:StreamHandler 到 stderr + 时间戳 + level + module name,符合 12-factor
+# 日志规范(docker/k8s 收集 stderr)。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI 智能体虚拟小镇")
@@ -163,7 +174,18 @@ async def run_tick():
         if commands.get(agent_id):
             user_cmd = commands[agent_id].pop(0)
             logger.info("V5: agent %s 收到指令: %s", agent_id, user_cmd)
-        action = await agent.decide(snap, user_command=user_cmd)
+        # I18 fix(P3 #109):LLM 失败(空响应/截断无法修复) → fallback 到 idle
+        # 而不是 raise,否则该 agent tick 整轮失败,UI 上"卡死"。
+        # logger.warning 留下证据,既可观测又不阻塞其他 agent。
+        try:
+            action = await agent.decide(snap, user_command=user_cmd)
+        except Exception as e:
+            logger.warning(
+                "P3 fallback: agent %s decide failed (%s), using idle",
+                agent_id, e,
+            )
+            from agent_runtime.actions import Action
+            action = Action(name="idle", target=None, params={})
         last_actions[agent_id] = action.name
         # I2 fix:用 DEFAULT_LOCATIONS 校验,消除硬编码
         if action.name == "go_to" and action.target in DEFAULT_LOCATIONS:
