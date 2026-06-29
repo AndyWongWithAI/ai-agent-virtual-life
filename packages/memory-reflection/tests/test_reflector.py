@@ -204,6 +204,144 @@ async def test_maybe_reflect_no_publish_when_bus_is_none():
     assert result == "ok"
 
 
+# --- 任务 #123(Bug2):strip 思考链 — LLM 不应把 chain-of-thought 泄漏到 LTM ---
+
+
+def test_strip_think_blocks_removes_think_block():
+    """``...`` 必须被剥离,落 LTM 的只是最终输出"""
+    raw = "<think>think_internal_thought\nthink_more</think>\n最终摘要:李四今天睡了 8 小时。"
+    cleaned = Reflector._strip_think_blocks(raw)
+    assert "think_internal_thought" not in cleaned
+    assert "think_more" not in cleaned
+    assert "<think>" not in cleaned
+    assert "最终摘要:李四今天睡了 8 小时。" in cleaned
+
+
+def test_strip_think_blocks_removes_analysis_block():
+    """另一种思考包裹形式 ``...`` 也应被剥离"""
+    raw = "<analysis>analysis_internal</analysis>\n李四吃了早饭。"
+    cleaned = Reflector._strip_think_blocks(raw)
+    assert "analysis_internal" not in cleaned
+    assert "<analysis>" not in cleaned
+    assert "李四吃了早饭。" in cleaned
+
+
+def test_strip_think_blocks_passthrough_clean_text():
+    """普通文本不应被改动"""
+    raw = "李四今天和王五去公园散步,中午吃了一碗面。"
+    cleaned = Reflector._strip_think_blocks(raw)
+    assert cleaned == raw
+
+
+def test_strip_think_blocks_empty_returns_fallback():
+    """全被 strip 掉的话返回 (空摘要) 占位,避免 LTM 存空字符串"""
+    raw = "<think>all_thinking_content</think>"
+    cleaned = Reflector._strip_think_blocks(raw)
+    assert cleaned == "(空摘要)"
+
+
+def test_strip_think_blocks_collapses_extra_newlines():
+    """strip 后多余的空行应被合并"""
+    raw = "<think>block1</think>\n\n\n\n\n李四散步。"
+    cleaned = Reflector._strip_think_blocks(raw)
+    # 三个以上连续换行应被合并
+    assert "\n\n\n" not in cleaned
+    assert "李四散步。" in cleaned
+    assert "<think>" not in cleaned
+
+
+@pytest.mark.asyncio
+async def test_reflector_writes_stripped_text_to_ltm_and_publish():
+    """任务 #123:LLM 返回带 think 块时,ltm.add_summary 与 bus.publish 都用干净文本,
+    思考链不应泄漏到 LTM 和 WS。"""
+    from memory_reflection import Reflector
+    from event_bus import Topic
+
+    captured_ltm_text: dict = {}
+    captured_payload: dict = {}
+
+    class _FakeLtm:
+        def __init__(self):
+            self.redis = MagicMock(
+                get=AsyncMock(return_value=None),
+                set=AsyncMock(),
+            )
+
+        async def add_summary(self, summary):
+            captured_ltm_text["text"] = summary.text
+
+    class _FakeBus:
+        async def publish(self, topic, payload):
+            captured_payload["text"] = payload.get("text")
+
+        async def run_forever(self):
+            return None
+
+    llm = MagicMock(call=AsyncMock(return_value="<think>think_thinking_content\nthink_more</think>\n李四今天吃三顿饭,无异常。"))
+    stm = MagicMock(recent=AsyncMock(return_value=[
+        Event(agent_id="lisi", kind="decision", content="e1", ts=datetime(2026, 6, 29, 17, 0)),
+        Event(agent_id="lisi", kind="decision", content="e2", ts=datetime(2026, 6, 29, 17, 30)),
+        Event(agent_id="lisi", kind="decision", content="e3", ts=datetime(2026, 6, 29, 18, 0)),
+    ]))
+    rf = Reflector(llm, stm, _FakeLtm())
+    with patch("memory_reflection.reflector.datetime") as mock_dt:
+        mock_dt.now.return_value = datetime(2026, 6, 29, 18, 0)
+        mock_dt.fromisoformat = datetime.fromisoformat
+        await rf.maybe_reflect("lisi", bus=_FakeBus())
+
+    assert "<think>" not in captured_ltm_text["text"]
+    assert "think_thinking_content" not in captured_ltm_text["text"]
+    assert "李四今天吃三顿饭" in captured_ltm_text["text"]
+    assert "<think>" not in captured_payload["text"]
+    assert "think_thinking_content" not in captured_payload["text"]
+    assert "李四今天吃三顿饭" in captured_payload["text"]
+
+
+# --- 任务 #124(Bug3):反思 prompt 不应要求 LLM 下评判 ---
+
+
+@pytest.mark.asyncio
+async def test_reflector_prompt_asks_for_neutral_description():
+    """任务 #124:反思 prompt 必须包含「不下判断/不下诊断」「客观」类约束,
+    并且不应出现「情绪倾向」等会诱导价值判断的字段。"""
+    fake_redis = AsyncMock()
+    fake_redis.get = AsyncMock(return_value=None)
+    fake_redis.set = AsyncMock()
+    stm = ShortTermMemory(fake_redis)
+    ltm = LongTermMemory(fake_redis)
+    now = datetime(2026, 6, 29, 18, 0)
+    stm.recent = AsyncMock(return_value=[
+        Event(agent_id="a1", kind="decision", content="E1", ts=now - timedelta(hours=1)),
+        Event(agent_id="a1", kind="decision", content="E2", ts=now - timedelta(hours=2)),
+        Event(agent_id="a1", kind="decision", content="E3", ts=now - timedelta(hours=3)),
+    ])
+    ltm.add_summary = AsyncMock()
+    llm = AsyncMock()
+
+    captured: dict = {}
+
+    async def _capture(messages, **kw):
+        captured["prompt"] = messages[0]["content"]
+        return "ok"
+
+    llm.call = AsyncMock(side_effect=_capture)
+
+    rf = Reflector(llm, stm, ltm)
+    with patch("memory_reflection.reflector.datetime") as mock_dt:
+        mock_dt.now.return_value = now
+        mock_dt.fromisoformat = datetime.fromisoformat
+        await rf.maybe_reflect("a1")
+
+    prompt = captured["prompt"]
+    # 关键词约束
+    assert "不下判断" in prompt, "prompt 应明确禁止下判断"
+    assert "客观" in prompt, "prompt 应强调客观描述"
+    assert "卡顿" in prompt, "prompt 应点名禁用词"
+    # 旧 prompt 不应再出现
+    assert "情绪倾向" not in prompt, "prompt 不应再要求情绪倾向(会诱导判断)"
+    assert "与谁关系有变化" not in prompt
+
+
 # --- I12 fix:Reflector 内存缓存 stale bug (task #83) ---
 
 
