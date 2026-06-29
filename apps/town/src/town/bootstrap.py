@@ -24,7 +24,7 @@ from event_memory_system import EventStore
 from dialogue_generator import DialogueTrigger, DialogueGenerator
 
 # 加载 .env(放在 town/ 目录,即 apps/town/.env)
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 
 async def bootstrap() -> dict:
