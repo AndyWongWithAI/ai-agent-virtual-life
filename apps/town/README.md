@@ -119,8 +119,16 @@ curl https://life.intelab.cn/api/agents/lisi/status
 
 ### Q4:town 日志去哪看?
 
-- 本地:`docker logs infra-app-1 -f`
-- Grafana 日志:http://8.163.80.32:3000(待 promtail 配好 #1 docker remote API)
+- **直接看生产**(权威源):`ssh root@124.71.219.208 "docker logs infra-app-1 --tail 200 -f"`
+- **本机归档**:#3 `/var/log/town/town.log`(由 `docker-logs-puller.sh` 每 10s 增量拉过来,已运行)
+- **Grafana 日志**:`http://8.163.80.32:3000/explore`,Loki 数据源,job="syslog"(本机系统日志) — **town 日志因 promtail 2.9 file glob tailer bug 未直接接入**(详见熔断决策)
+
+**为什么不直连 Loki**:曾试 promtail 2.9 拉 #1 docker logs(走 docker remote API / ssh / file_sd_configs 各种方案),发现:
+- 暴露 #1 docker 2375 端口 → 安全风险(任意人可 root 容器)
+- ssh + docker logs 拉到 #3 → promtail 2.9 对 pre-existing file 不开 tailer
+- 走 town main.py 加 syslog handler → 需 town 重启 + GHA 部署
+
+**务实方案**:**ssh 直接看 #1 容器日志**(SSOT),Loki 留作本机 syslog 监控。town 日志归档通过每日 03:00 backup cron → `/backup/town/town-YYYYMMDD-HHMMSS.tar.gz`(已含 town.log 等关键状态)。
 
 ### Q5:4 维状态条一直不变?
 
