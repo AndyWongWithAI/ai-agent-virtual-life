@@ -146,24 +146,22 @@ async def test_maybe_reflect_publishes_to_bus():
         set=AsyncMock(),
         expire=AsyncMock(),
     )
-    stm = MagicMock(
-        add=AsyncMock(),
-        recent=AsyncMock(
-            return_value=[
-                Event(agent_id="lisi", kind="decision", content="go to park", ts=datetime.now()),
-                Event(agent_id="lisi", kind="decision", content="talk to wangwu", ts=datetime.now()),
-                Event(agent_id="lisi", kind="decision", content="sleep", ts=datetime.now()),
-            ]
-        ),
-    )
     ltm = MagicMock(add_summary=AsyncMock(), redis=redis)
     bus = MagicMock(publish=AsyncMock())
 
-    reflector = Reflector(llm, stm, ltm)
+    reflector = Reflector(llm, MagicMock(), ltm)
     # 强制 last_reflect 早于 6h 前,触发反思
+    # Event 创建必须在 patch context 内,否则 ts=datetime.now() 走真实时间,CI runner 上 ts 会远离 mock now > 6h
     with patch("memory_reflection.reflector.datetime") as mock_dt:
         mock_dt.now.return_value = datetime(2026, 6, 29, 18, 0)
         mock_dt.fromisoformat = datetime.fromisoformat
+        # mock stm.recent 在 context 内返回 Event,datetime.now() 也走 mock
+        events = [
+            Event(agent_id="lisi", kind="decision", content="go to park", ts=mock_dt.now()),
+            Event(agent_id="lisi", kind="decision", content="talk to wangwu", ts=mock_dt.now()),
+            Event(agent_id="lisi", kind="decision", content="sleep", ts=mock_dt.now()),
+        ]
+        reflector.stm.recent = AsyncMock(return_value=events)
         await reflector.maybe_reflect("lisi", bus=bus)
 
     assert bus.publish.await_count == 1
@@ -185,21 +183,18 @@ async def test_maybe_reflect_no_publish_when_bus_is_none():
         set=AsyncMock(),
         expire=AsyncMock(),
     )
-    stm = MagicMock(
-        add=AsyncMock(),
-        recent=AsyncMock(
-            return_value=[
-                Event(agent_id="lisi", kind="decision", content="e1", ts=datetime.now()),
-                Event(agent_id="lisi", kind="decision", content="e2", ts=datetime.now()),
-                Event(agent_id="lisi", kind="decision", content="e3", ts=datetime.now()),
-            ]
-        ),
-    )
     ltm = MagicMock(add_summary=AsyncMock(), redis=redis)
-    reflector = Reflector(llm, stm, ltm)
+    reflector = Reflector(llm, MagicMock(), ltm)
     # 不传 bus,不能报错(正常触发反思但不发事件)
+    # Event 创建必须在 patch context 内,否则 CI runner datetime.now() 远离 mock now > 6h
     with patch("memory_reflection.reflector.datetime") as mock_dt:
         mock_dt.now.return_value = datetime(2026, 6, 29, 18, 0)
         mock_dt.fromisoformat = datetime.fromisoformat
+        events = [
+            Event(agent_id="lisi", kind="decision", content="e1", ts=mock_dt.now()),
+            Event(agent_id="lisi", kind="decision", content="e2", ts=mock_dt.now()),
+            Event(agent_id="lisi", kind="decision", content="e3", ts=mock_dt.now()),
+        ]
+        reflector.stm.recent = AsyncMock(return_value=events)
         result = await reflector.maybe_reflect("lisi")  # 无 bus 参数
     assert result == "ok"
