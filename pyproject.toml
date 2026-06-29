@@ -30,4 +30,8 @@ dialogue-generator = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["packages"]
+testpaths = ["packages", "apps"]
+markers = [
+    "integration: requires real docker postgres+redis (deselect with '-m \"not integration\"')",
+]
+addopts = "-m 'not integration'"
