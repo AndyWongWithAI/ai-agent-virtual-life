@@ -17,11 +17,15 @@ from memory_reflection.models import Event
 async def test_reflector_skips_when_recent():
     """6h 内已反思过 -> 跳过,LLM 不调用"""
     fake_redis = AsyncMock()
+    # I12 fix:last_reflect 不再有内存缓存,通过 Redis 返回 30 分钟前的时间戳
+    fake_redis.get = AsyncMock(
+        return_value=(datetime.now() - timedelta(minutes=30)).isoformat()
+    )
+    fake_redis.set = AsyncMock()
     stm = ShortTermMemory(fake_redis)
     ltm = LongTermMemory(fake_redis)
     llm = AsyncMock()
     rf = Reflector(llm, stm, ltm)
-    rf.last_reflect["a1"] = datetime.now()
     result = await rf.maybe_reflect("a1")
     assert result is None
     llm.call.assert_not_called()
@@ -150,7 +154,7 @@ async def test_maybe_reflect_publishes_to_bus():
     bus = MagicMock(publish=AsyncMock())
 
     reflector = Reflector(llm, MagicMock(), ltm)
-    # 强制 last_reflect 早于 6h 前,触发反思
+    # I12 fix:Redis 无 last_reflect (返回 None) -> 触发反思
     # Event 创建必须在 patch context 内,否则 ts=datetime.now() 走真实时间,CI runner 上 ts 会远离 mock now > 6h
     with patch("memory_reflection.reflector.datetime") as mock_dt:
         mock_dt.now.return_value = datetime(2026, 6, 29, 18, 0)
@@ -198,3 +202,87 @@ async def test_maybe_reflect_no_publish_when_bus_is_none():
         reflector.stm.recent = AsyncMock(return_value=events)
         result = await reflector.maybe_reflect("lisi")  # 无 bus 参数
     assert result == "ok"
+
+
+# --- I12 fix:Reflector 内存缓存 stale bug (task #83) ---
+
+
+@pytest.mark.asyncio
+async def test_get_last_no_memory_cache_returns_from_redis():
+    """_get_last 必须直接读 Redis,不能有内存缓存(避免 stale 值卡住 6h gate)"""
+    from memory_reflection import Reflector
+
+    llm = MagicMock(call=AsyncMock(return_value="ok"))
+    redis = MagicMock()
+    # 模拟 Redis 里有 7h 前的 last_reflect
+    seven_hours_ago = (datetime.now() - timedelta(hours=7)).isoformat()
+    redis.get = AsyncMock(return_value=seven_hours_ago)
+    redis.set = AsyncMock()
+    redis.expire = AsyncMock()
+    stm = MagicMock(
+        add=AsyncMock(),
+        recent=AsyncMock(
+            return_value=[
+                Event(agent_id="lisi", kind="decision", content="e", ts=datetime.now()),
+                Event(agent_id="lisi", kind="decision", content="e", ts=datetime.now()),
+                Event(agent_id="lisi", kind="decision", content="e", ts=datetime.now()),
+            ]
+        ),
+    )
+    ltm = MagicMock(add_summary=AsyncMock(), redis=redis)
+    reflector = Reflector(llm, stm, ltm)
+    last = await reflector._get_last("lisi")
+    assert last is not None
+    # 内存缓存必须不存在(verify attribute 删了或不存在)
+    assert not hasattr(reflector, "last_reflect") or not getattr(reflector, "last_reflect", None), (
+        "Reflector 不应有 last_reflect 内存缓存"
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_last_raises_on_redis_failure():
+    """_set_last 写 Redis 失败必须 re-raise,不能被吞(避免上层以为成功)"""
+    from memory_reflection import Reflector
+
+    llm = MagicMock(call=AsyncMock(return_value="ok"))
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.set = AsyncMock(side_effect=Exception("redis down"))
+    redis.expire = AsyncMock()
+    stm = MagicMock()
+    ltm = MagicMock(add_summary=AsyncMock(), redis=redis)
+    reflector = Reflector(llm, stm, ltm)
+    with pytest.raises(Exception, match="redis down"):
+        await reflector._set_last("lisi", datetime.now())
+
+
+@pytest.mark.asyncio
+async def test_maybe_reflect_triggers_when_redis_only_has_old_last():
+    """e2e:Redis 里有 7h 前的 last_reflect,memory cache 即使有也不该 block 触发"""
+    from memory_reflection import Reflector
+
+    llm = MagicMock(call=AsyncMock(return_value="new summary"))
+    seven_hours_ago_iso = (datetime.now() - timedelta(hours=7)).isoformat()
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=seven_hours_ago_iso)
+    redis.set = AsyncMock()
+    redis.expire = AsyncMock()
+    now = datetime.now()
+    events = [
+        Event(
+            agent_id="lisi",
+            kind="decision",
+            content=f"e{i}",
+            ts=now - timedelta(minutes=30),
+        )
+        for i in range(3)
+    ]
+    stm = MagicMock(add=AsyncMock(), recent=AsyncMock(return_value=events))
+    ltm = MagicMock(add_summary=AsyncMock(), redis=redis)
+    bus = MagicMock(publish=AsyncMock())
+    reflector = Reflector(llm, stm, ltm)
+    # 即使注入内存缓存(模拟其他代码 path 错误地设了),也不该被读
+    reflector.last_reflect = {"lisi": now}  # 现在时间,但 Redis 是 7h 前
+    text = await reflector.maybe_reflect("lisi", bus=bus)
+    assert text == "new summary"  # 触发了
+    assert bus.publish.await_count == 1  # publish 了

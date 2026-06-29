@@ -110,3 +110,25 @@ async def test_run_dialogue_appends_to_stm(fake_ctx):
     for call in fake_ctx["stm"].add.call_args_list:
         ev = call.args[0]
         assert ev.kind == "dialogue"
+
+
+# --- I12 fix:Reflector _set_last 失败 re-raise 后 run_tick 必须 continue (task #83) ---
+
+
+@pytest.mark.asyncio
+async def test_run_tick_continues_when_set_last_fails(fake_ctx):
+    """_set_last 失败 re-raise 后,run_tick 必须 continue(不能 crash 其他 agent)
+
+    验证 town main loop 的 try/except 包裹保证 tick 不被反射器异常打断。
+    """
+    # mock reflector.maybe_reflect 抛异常(模拟 _set_last 失败 re-raise 上来的场景)
+    fake_ctx["reflector"].maybe_reflect = AsyncMock(
+        side_effect=Exception("redis down")
+    )
+    from town.main import run_tick
+
+    with patch("town.main.ctx", fake_ctx):
+        # 不能 crash
+        await run_tick()
+    # 每个 agent 都尝试过 maybe_reflect(2 个 agent)
+    assert fake_ctx["reflector"].maybe_reflect.await_count == 2

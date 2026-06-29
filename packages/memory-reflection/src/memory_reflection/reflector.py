@@ -21,18 +21,12 @@ class Reflector:
         self.llm = llm_client
         self.stm = stm
         self.ltm = ltm
-        # 内存缓存(进程内),减少 Redis round-trip;权威值在 Redis
-        self.last_reflect: dict[str, datetime] = {}
 
     def _redis_key(self, agent_id: str) -> str:
         return f"reflect:last:{agent_id}"
 
     async def _get_last(self, agent_id: str) -> datetime | None:
-        # 先看内存
-        v = self.last_reflect.get(agent_id)
-        if v is not None:
-            return v
-        # 退化到 Redis(进程重启后)
+        # I12 fix:去掉内存缓存,每次直接读 Redis(避免 stale 值卡住 6h gate)
         try:
             raw = await self.ltm.redis.get(self._redis_key(agent_id))
         except Exception:
@@ -46,14 +40,12 @@ class Reflector:
         if not isinstance(raw, str):
             return None
         try:
-            ts = datetime.fromisoformat(raw)
+            return datetime.fromisoformat(raw)
         except ValueError:
             return None
-        self.last_reflect[agent_id] = ts
-        return ts
 
     async def _set_last(self, agent_id: str, ts: datetime) -> None:
-        self.last_reflect[agent_id] = ts
+        # I12 fix:写 Redis 失败必须 re-raise,避免上层以为成功
         try:
             await self.ltm.redis.set(
                 self._redis_key(agent_id),
@@ -62,6 +54,7 @@ class Reflector:
             )
         except Exception:
             logger.exception("redis set last_reflect failed")
+            raise
 
     async def maybe_reflect(
         self,
