@@ -18,8 +18,17 @@ let agentNames = {};  // agent_id -> name
 let agentColors = {};  // agent_id -> color
 
 async function init() {
-  const resp = await fetch("/api/agents");
-  const agents = await resp.json();
+  let agents;
+  try {
+    const resp = await fetch("/api/agents");
+    if (!resp.ok) throw new Error(`/api/agents ${resp.status}`);
+    agents = await resp.json();
+  } catch (e) {
+    addEvent("⚠️ /api/agents 拉取失败:" + e.message + "(地图无 agent 可显示)");
+    console.error("[init] /api/agents failed:", e);
+    draw();
+    return;
+  }
   agents.forEach((a, i) => {
     agentPositions[a.id] = a.location;
     agentNames[a.id] = a.name;
@@ -69,7 +78,9 @@ function addEvent(text) {
 }
 
 function connectWS() {
-  const ws = new WebSocket(`ws://${location.host}/ws`);
+  // HTTPS 下浏览器自动用 wss://,HTTP 下用 ws://
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${scheme}//${location.host}/ws`);
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     switch (msg.topic) {
@@ -101,7 +112,11 @@ function connectWS() {
         break;
     }
   };
-  ws.onclose = () => setTimeout(connectWS, 3000);
+  ws.onerror = (e) => {
+    addEvent("❌ WebSocket 连接失败,1.5s 后重试…");
+    console.error("[ws] error", e);
+  };
+  ws.onclose = () => setTimeout(connectWS, 1500);
 }
 
 setInterval(() => {

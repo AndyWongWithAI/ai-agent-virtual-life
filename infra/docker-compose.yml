@@ -37,6 +37,10 @@ services:
       dockerfile: apps/town/Dockerfile
     env_file:
       - ../apps/town/.env
+    environment:
+      # 容器内用 docker service name(.env 里的 localhost:5433/6380 是开发机配置)
+      DATABASE_URL: postgresql+asyncpg://town:town_dev_pwd@postgres:5432/town
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "127.0.0.1:8001:8000"
     depends_on:
