@@ -16,7 +16,7 @@ const eventsEl = document.getElementById("events");
 let agentPositions = {};  // agent_id -> location
 let agentNames = {};  // agent_id -> name
 let agentColors = {};  // agent_id -> color
-let memorySummaries = [];  // 最近 5 条 {ts, agent_id, text}
+let currentAgents = [];  // 任务 #127:5 agent 实时状态 [{id, name, location, current_action, status_bar}]
 let agentRenderPositions = {};  // V2:点击检测用 {agent_id: {x, y, radius}}
 
 async function init() {
@@ -37,8 +37,8 @@ async function init() {
     agentColors[a.id] = AGENT_COLORS[i % AGENT_COLORS.length];
   });
   draw();
-  // 任务 #125/#126(Bug4/5):启动时拉历史,避免刷新后从 0 开始
-  await Promise.all([loadHistoricalEvents(), loadHistoricalMemories()]);
+  // 任务 #125(Bug4) + 任务 #127(B1):启动加载历史事件 + 实时状态面板
+  await Promise.all([loadHistoricalEvents(), loadCurrentState()]);
   connectWS();
   await initCommandPanel();
 }
@@ -64,25 +64,70 @@ async function loadHistoricalEvents() {
   }
 }
 
-// 任务 #126(Bug5):init 拉 /api/memory-summaries,填 memorySummary 然后渲染面板
-async function loadHistoricalMemories() {
+// 任务 #127(B1):init 拉 /api/agents(含 status_bar + current_action),渲染「近况」面板
+async function loadCurrentState() {
   try {
-    const resp = await fetch("/api/memory-summaries?limit=5");
+    const resp = await fetch("/api/agents");
     if (!resp.ok) return;
-    const items = await resp.json();
-    // 后端返 desc,前端按 desc 存进头部
-    for (const m of items.reverse()) {
-      memorySummaries.unshift({
-        ts: m.ts,
-        agent_id: m.agent_id,
-        text: m.text,
-      });
-    }
-    if (memorySummaries.length > 5) memorySummaries.length = 5;
-    drawMemoryPanel();
+    currentAgents = await resp.json();
+    drawCurrentPanel();
   } catch (e) {
-    console.warn("[init] /api/memory-summaries failed:", e);
+    console.warn("[init] /api/agents failed:", e);
   }
+}
+
+// 任务 #127(B1):把当前 (action_name, target) 转成短中文标签,前端纯展示用
+function actionLabel(action) {
+  if (!action || !action.name) return "—";
+  const name = action.name;
+  const target = action.target;
+  switch (name) {
+    case "go_to":   return target ? `🚶 前往 ${target}` : "🚶 移动中";
+    case "talk_to": return target ? `💬 与 ${target} 交谈` : "💬 对话中";
+    case "eat":     return "🍚 吃饭";
+    case "sleep":   return "😴 睡觉";
+    case "work":    return "💼 工作";
+    case "idle":    return "💭 休息";
+    default:        return name;
+  }
+}
+
+// 任务 #127(B1):渲染「近况」面板 — 5 个 agent 实时状态(name/位置/动作/4 维)
+function drawCurrentPanel() {
+  const listEl = document.getElementById("current-list");
+  if (!listEl) return;
+  listEl.innerHTML = "";
+  for (const a of currentAgents) {
+    const div = document.createElement("div");
+    div.className = "current-item";
+    const bar = a.status_bar || {};
+    const html =
+      `<div class="name"></div>` +
+      `<div class="loc"></div>` +
+      `<div class="action"></div>` +
+      `<div class="bars">` +
+        barHtml("饱", bar["饱"]) +
+        barHtml("累", bar["累"]) +
+        barHtml("孤独", bar["孤独"]) +
+        barHtml("快乐", bar["快乐"]) +
+      `</div>`;
+    div.innerHTML = html;
+    // textContent 防 XSS(后端虽是受信任 LLM 路径,仍走显式)
+    div.querySelector(".name").textContent = a.name;
+    div.querySelector(".loc").textContent = `📍 ${a.location}`;
+    div.querySelector(".action").textContent = actionLabel(a.current_action);
+    listEl.appendChild(div);
+  }
+}
+
+function barHtml(label, value) {
+  if (typeof value !== "number") return "";
+  const w = Math.max(0, Math.min(100, value));
+  return `<div class="bar">` +
+    `<span class="bar-label">${label}</span>` +
+    `<div class="bar-bg"><div class="bar-fill" style="width:${w}%"></div></div>` +
+    `<span class="bar-val">${value}</span>` +
+  `</div>`;
 }
 
 // V5:指令面板 — 填充 agent 下拉 + 绑定事件
@@ -211,24 +256,6 @@ function addEvent(text) {
   if (eventsEl.children.length > 30) eventsEl.removeChild(eventsEl.lastChild);
 }
 
-function drawMemoryPanel() {
-  const listEl = document.getElementById("memory-list");
-  if (!listEl) return;
-  listEl.innerHTML = "";
-  for (const m of memorySummaries) {
-    const div = document.createElement("div");
-    div.className = "memory-item";
-    const ts = new Date(m.ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-    div.innerHTML =
-      `<span class="ts">[${ts}]</span>` +
-      `<span class="agent">${agentNames[m.agent_id] || m.agent_id}:</span>` +
-      `<div class="text"></div>`;
-    // 用 textContent 防 XSS(虽然后端是 LLM 输出,但仍要防)
-    div.querySelector(".text").textContent = m.text;
-    listEl.appendChild(div);
-  }
-}
-
 function connectWS() {
   // HTTPS 下浏览器自动用 wss://,HTTP 下用 ws://
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
@@ -245,6 +272,9 @@ function connectWS() {
           `${agentNames[agent_id] || agent_id}: ${action ? action.name : "?"} -> ${action ? action.target || "-" : ""}`
         );
         draw();
+        // 任务 #127(B1):agent 决策后,重新拉取 /api/agents 刷新「近况」面板的
+        // 4 维状态(apply_action 在 tick 内紧跟 decide,UI 即可见)
+        loadCurrentState();
         break;
       }
       case "dialogue.start": {
@@ -259,16 +289,8 @@ function connectWS() {
         );
         break;
       }
-      case "memory.reflect": {
-        memorySummaries.unshift({
-          ts: msg.period_end || new Date().toISOString(),
-          agent_id: msg.agent_id,
-          text: msg.text || "(空摘要)",
-        });
-        if (memorySummaries.length > 5) memorySummaries.length = 5;
-        drawMemoryPanel();
-        break;
-      }
+      // 任务 #127(B):memory.reflect 主题保留但前端不再渲染(产品决定完全去掉反思区);
+      // 反思仍由 Reflector 写入 LTM,继续服务 LLM decision.prompt 的 recent_summary。
       default:
         // 忽略未知 topic,不刷屏
         break;

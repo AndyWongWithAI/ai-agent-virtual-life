@@ -8,7 +8,7 @@ canvas { display: block; }
   background: #fff; border: 1px solid #ddd; padding: 10px;
 }
 .event { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 14px; }
-#memory-panel {
+#current-panel {
   position: fixed;
   right: 16px;
   bottom: 16px;
@@ -23,14 +23,14 @@ canvas { display: block; }
   font-size: 13px;
   z-index: 10;
 }
-#memory-panel h3 {
+#current-panel h3 {
   margin: 0 0 8px 0;
   font-size: 14px;
   color: #333;
   border-bottom: 1px solid #ddd;
   padding-bottom: 4px;
 }
-.memory-item {
+.current-item {
   margin-bottom: 8px;
   padding: 6px 8px;
   background: #f5f5f5;
@@ -38,17 +38,46 @@ canvas { display: block; }
   border-radius: 4px;
   line-height: 1.4;
 }
-.memory-item .agent {
+.current-item .name {
   font-weight: bold;
   color: #2c5f5f;
   margin-right: 6px;
 }
-.memory-item .ts {
-  font-size: 11px;
-  color: #888;
+.current-item .action {
+  display: block;
+  color: #444;
+  margin: 2px 0;
 }
-.memory-item .text {
+.current-item .bars {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
   margin-top: 4px;
+  font-size: 11px;
+}
+.current-item .bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.current-item .bar-label {
+  width: 16px;
+  text-align: right;
+  color: #666;
+}
+.current-item .bar-bg {
+  flex: 1;
+  height: 4px;
+  background: #ddd;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.current-item .bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4ECDC4, #45B7D1);
+}
+.current-item .bar-val {
+  width: 18px;
   color: #333;
 }
 

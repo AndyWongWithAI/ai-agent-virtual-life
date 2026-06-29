@@ -197,8 +197,9 @@ async def run_tick():
         if action.name == "go_to" and action.target in DEFAULT_LOCATIONS:
             ctx["world"].place(agent_id, action.target)
         # 任务 #113:apply_action 根据动作名调整 4 维状态(eat 饱+ sleep 累- 等)
+        # 任务 #127(B1):传 Action 对象(含 target),World 记最新动作给前端近况面板用
         try:
-            ctx["world"].apply_action(agent_id, action.name)
+            ctx["world"].apply_action(agent_id, action)
         except Exception:
             logger.exception("world.apply_action failed for %s/%s", agent_id, action.name)
         await ctx["event_store"].append(
@@ -310,16 +311,27 @@ async def run_dialogue(a_id: str, b_id: str, location: str):
 
 @app.get("/api/agents")
 async def list_agents():
-    """返回 5 个 agent 当前状态"""
+    """返回 5 个 agent 当前状态(任务 #127/B1:扩展为含实时状态给「近况」面板)。
+
+    字段:
+    - id / name / location(原有)
+    - current_action:{name, target} 最新一次 apply_action 的动作+目标
+    - status_bar:{饱/累/孤独/快乐: int} 4 维状态(中文 label)
+    """
     assert ctx is not None
-    return [
-        {
-            "id": p["id"],
+    out = []
+    for p in ctx["personas"]:
+        aid = p["id"]
+        action_name, target = ctx["world"].latest_action_of(aid)
+        status_en = ctx["world"].status_of(aid)
+        out.append({
+            "id": aid,
             "name": p["name"],
-            "location": ctx["world"].location_of(p["id"]),
-        }
-        for p in ctx["personas"]
-    ]
+            "location": ctx["world"].location_of(aid),
+            "current_action": {"name": action_name, "target": target},
+            "status_bar": {LABELS_ZH[k]: v for k, v in status_en.items() if k in LABELS_ZH},
+        })
+    return out
 
 
 class CommandRequest(BaseModel):
@@ -426,31 +438,9 @@ async def list_events(limit: int = 30):
     ]
 
 
-@app.get("/api/memory-summaries")
-async def list_memory_summaries(limit: int = 5):
-    """任务 #126(Bug5):全局最近 N 条 LTM 反思摘要(跨所有 agent),按 period_end 倒序。
-
-    用于前端「近期记忆」面板初始填充——若 6h gate 尚未触发,LTM 为空,
-    前端面板初始显示"暂无反思摘要"。
-    """
-    assert ctx is not None
-    if limit < 1 or limit > 50:
-        raise HTTPException(status_code=400, detail="limit 必须在 1-50")
-    all_summaries: list = []
-    for agent_id in ctx["agents"]:
-        summaries = await ctx["ltm"].recent_summaries(agent_id, n=3)
-        all_summaries.extend(summaries)
-    # 按 period_end desc 排序后取前 N
-    all_summaries.sort(key=lambda s: s.period_end, reverse=True)
-    top = all_summaries[:limit]
-    return [
-        {
-            "ts": s.period_end.isoformat(),
-            "agent_id": s.agent_id,
-            "text": s.text,
-        }
-        for s in top
-    ]
+# 注:任务 #127(B)之后,/api/memory-summaries 端点移除 ——
+# 6h LTM 反思仅作为 LLM decision prompt 的 recent_summary 注入,
+# 不再直接展示给用户。用户面板走实时状态(/api/agents + 4 维 + 当前动作)。
 
 
 @app.websocket("/ws")
