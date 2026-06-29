@@ -50,7 +50,8 @@ async def test_event_store_real_append_and_list(event_store):
 @pytest.mark.asyncio
 async def test_tick_loop_one_iteration_fake_llm(redis_url, database_url):
     """真服务(redis+pg)+ fake LLM,跑 1 次 tick,验证决策入 PG"""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from datetime import datetime as real_datetime
     from event_memory_system import EventStore
     from virtual_world_engine import World
     from agent_runtime import Agent
@@ -65,33 +66,42 @@ async def test_tick_loop_one_iteration_fake_llm(redis_url, database_url):
     })
     fake_llm.aclose = AsyncMock()
 
-    r = redis_async.from_url(redis_url)
-    stm = ShortTermMemory(r)
-    ltm = LongTermMemory(r)
-    reflector = Reflector(fake_llm, stm, ltm)
+    # CI runner 是 UTC 时区,凌晨触发时 ScheduleLock.forced_action 会返回 sleep,
+    # 把整个 Agent.decide 流程(包括它内部的 datetime.now() 调用)固定到一个
+    # 白天时间点(2026-06-29 周一 14:30),绕过 schedule lock 强制逻辑。
+    fake_now = real_datetime(2026, 6, 29, 14, 30, 0)
+    with patch("agent_runtime.agent.datetime") as mock_dt:
+        mock_dt.now.return_value = fake_now
+        # 让 datetime(2026, 6, 29, ...) 这类构造调用仍走真实 datetime
+        mock_dt.side_effect = lambda *a, **kw: real_datetime(*a, **kw)
 
-    world = World()
-    store = EventStore(database_url)
-    await store.init_schema()
+        r = redis_async.from_url(redis_url)
+        stm = ShortTermMemory(r)
+        ltm = LongTermMemory(r)
+        reflector = Reflector(fake_llm, stm, ltm)
 
-    agent = Agent(
-        agent_id="int_tick_a", name="测试A", persona={"desc": "test"},
-        llm=fake_llm, stm=stm, ltm=ltm, reflector=reflector,
-    )
-    world.place("int_tick_a", "李四家")
-    snap = world.snapshot("int_tick_a")
-    action = await agent.decide(snap)
-    assert action.name == "go_to"
-    assert action.target == "厨房"
+        world = World()
+        store = EventStore(database_url)
+        await store.init_schema()
 
-    # 入 PG
-    eid = await store.append(
-        agent_id="int_tick_a", kind="decision",
-        content=str(action.to_dict()),
-    )
-    events = await store.list_events(agent_id="int_tick_a", kind="decision")
-    assert any(e.id == eid for e in events)
+        agent = Agent(
+            agent_id="int_tick_a", name="测试A", persona={"desc": "test"},
+            llm=fake_llm, stm=stm, ltm=ltm, reflector=reflector,
+        )
+        world.place("int_tick_a", "李四家")
+        snap = world.snapshot("int_tick_a")
+        action = await agent.decide(snap)
+        assert action.name == "go_to"
+        assert action.target == "厨房"
 
-    # 验证 LLM 真被调(且是 fake LLM,无网络)
-    assert fake_llm.call.await_count >= 1
+        # 入 PG
+        eid = await store.append(
+            agent_id="int_tick_a", kind="decision",
+            content=str(action.to_dict()),
+        )
+        events = await store.list_events(agent_id="int_tick_a", kind="decision")
+        assert any(e.id == eid for e in events)
+
+        # 验证 LLM 真被调(且是 fake LLM,无网络)
+        assert fake_llm.call.await_count >= 1
     await r.aclose()

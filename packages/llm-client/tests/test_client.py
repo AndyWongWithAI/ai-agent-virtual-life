@@ -4,11 +4,16 @@
 - 不依赖真实 MiniMax M3 API,通过 mock _raw_call 隔离
 - 不依赖真实 Redis,budget 测试用 mock record_and_check 隔离
 """
+import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from llm_client.client import LLMClient
 from llm_client.budget import BudgetExceeded
+
+# CI runner(redis:6379)与本机(redis:6380)端口差异:统一读 REDIS_URL 环境变量,
+# 缺省回退到本机默认 6380,CI 上 workflow 会注入 REDIS_URL=redis://localhost:6379/0。
+TEST_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380/0")
 
 
 def _patch_record(client):
@@ -21,7 +26,7 @@ async def test_call_returns_text():
     """正常调用:_raw_call 返回 ("text", cost) 时,call 应返回 text"""
     client = LLMClient(
         api_key="test",
-        redis_url="redis://localhost:6380/0",
+        redis_url=TEST_REDIS_URL,
         daily_budget_cny=10.0,
     )
     with _patch_record(client), \
@@ -39,7 +44,7 @@ async def test_budget_exceeded_raises():
     """
     client = LLMClient(
         api_key="test",
-        redis_url="redis://localhost:6380/0",
+        redis_url=TEST_REDIS_URL,
         daily_budget_cny=0.0001,  # 极小预算,1.0 cost 必超
     )
     with patch.object(client, "_raw_call", AsyncMock(return_value=("x", 1.0))):
@@ -53,7 +58,7 @@ async def test_call_returns_dict_when_json_schema():
     """json_schema 模式:LLM 返回 JSON 文本时,call 应解析并校验 required keys"""
     client = LLMClient(
         api_key="test",
-        redis_url="redis://localhost:6380/0",
+        redis_url=TEST_REDIS_URL,
         daily_budget_cny=10.0,
     )
     raw_json = '{"action": "wave", "target": "alice"}'
@@ -72,7 +77,7 @@ async def test_call_json_missing_required_raises():
     """json_schema 模式:JSON 缺 required key 时,应抛 ValueError"""
     client = LLMClient(
         api_key="test",
-        redis_url="redis://localhost:6380/0",
+        redis_url=TEST_REDIS_URL,
         daily_budget_cny=10.0,
     )
     raw_json = '{"action": "wave"}'  # 缺 target
@@ -92,7 +97,7 @@ async def test_raw_call_uses_max_tokens_when_usage_is_none():
     """I3:resp.usage is None → cost 按 max_tokens 上限估算(in_tok 用消息字符数 / 4 粗估)"""
     client = LLMClient(
         api_key="test",
-        redis_url="redis://localhost:6380/0",
+        redis_url=TEST_REDIS_URL,
         daily_budget_cny=10.0,
     )
     # 构造一个 response 对象,usage=None
@@ -120,7 +125,7 @@ async def test_raw_call_uses_real_usage_when_present():
     """I3 对照:resp.usage 正常时,应使用真实值,不用悲观估算"""
     client = LLMClient(
         api_key="test",
-        redis_url="redis://localhost:6380/0",
+        redis_url=TEST_REDIS_URL,
         daily_budget_cny=10.0,
     )
     fake_response = MagicMock()
@@ -149,7 +154,7 @@ async def test_call_accumulates_cost_per_retry_attempt():
     """I4:retry 中每次成功 attempt 累加 1 次 cost,失败 attempt 不累加"""
     client = LLMClient(
         api_key="test",
-        redis_url="redis://localhost:6380/0",
+        redis_url=TEST_REDIS_URL,
         daily_budget_cny=10.0,
     )
     # 模拟 _raw_call 失败 2 次,第 3 次成功
@@ -182,7 +187,7 @@ async def test_call_records_each_successful_attempt():
     """I4 对照:每次 attempt 都成功(0 retry 路径)只累加 1 次"""
     client = LLMClient(
         api_key="test",
-        redis_url="redis://localhost:6380/0",
+        redis_url=TEST_REDIS_URL,
         daily_budget_cny=10.0,
     )
     record_calls: list[float] = []
@@ -204,7 +209,7 @@ async def test_call_records_each_successful_attempt():
 async def test_think_wrapped_json_parsed():
     """B4: LLM 返回 <think>...</think>\n{json} → 正确剥离 think,解析 JSON"""
     client = LLMClient(
-        api_key="test", redis_url="redis://localhost:6380/0", daily_budget_cny=10.0,
+        api_key="test", redis_url=TEST_REDIS_URL, daily_budget_cny=10.0,
     )
     wrapped = (
         '<think>分析中:李四在家,决定去公园</think>'
@@ -225,7 +230,7 @@ async def test_think_wrapped_json_parsed():
 async def test_think_no_close_tag_brace_fallback():
     """B6: max_tokens 截断导致 <think> 无 </think> 闭合,从首个 { 开始 fallback 解析"""
     client = LLMClient(
-        api_key="test", redis_url="redis://localhost:6380/0", daily_budget_cny=10.0,
+        api_key="test", redis_url=TEST_REDIS_URL, daily_budget_cny=10.0,
     )
     truncated = (
         "<think>还在思考中...但是 max_tokens 截断了\n"
@@ -246,7 +251,7 @@ async def test_think_no_close_tag_brace_fallback():
 async def test_think_close_tag_must_be_last_occurrence():
     """B4 边界:LLM 在 think 块结束后又输出 {text},应取最后一个 </think> 之后"""
     client = LLMClient(
-        api_key="test", redis_url="redis://localhost:6380/0", daily_budget_cny=10.0,
+        api_key="test", redis_url=TEST_REDIS_URL, daily_budget_cny=10.0,
     )
     text_with_two_thinks = (
         '<think>first thought</think>中间废话{not_json}'
