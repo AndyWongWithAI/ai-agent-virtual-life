@@ -28,6 +28,14 @@
     <h4>近期事件</h4>
     <div id="agent-panel-events"></div>
   </div>
+  <div id="command-panel">
+    <select id="command-agent">
+      <option value="">-- 选择 agent --</option>
+    </select>
+    <input id="command-input" type="text" placeholder="输入指令,如:去买菜" maxlength="100" />
+    <button id="command-send">发送</button>
+    <span id="command-status"></span>
+  </div>
   <script src="/static/canvas.js"></script>
 </body>
 </html>

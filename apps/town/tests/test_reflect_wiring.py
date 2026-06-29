@@ -132,3 +132,35 @@ async def test_run_tick_continues_when_set_last_fails(fake_ctx):
         await run_tick()
     # 每个 agent 都尝试过 maybe_reflect(2 个 agent)
     assert fake_ctx["reflector"].maybe_reflect.await_count == 2
+
+
+# --- V5:指令面板 — run_tick 从 commands dict 弹指令传给 agent.decide ---
+
+
+@pytest.mark.asyncio
+async def test_run_tick_pops_user_command_into_decide(fake_ctx):
+    """run_tick 必须从 commands dict 弹一条指令传给 agent.decide(user_command=)"""
+    from town.main import commands as global_commands
+
+    # 前后清理 global commands(避免污染其他测试)
+    global_commands.clear()
+    global_commands["lisi"] = ["去买菜"]
+    try:
+        fake_ctx["agents"]["lisi"].decide = AsyncMock(
+            return_value=MagicMock(
+                name="go_to", target="公园",
+                to_dict=lambda: {"name": "go_to", "target": "公园"},
+            )
+        )
+        from town.main import run_tick
+
+        with patch("town.main.ctx", fake_ctx), patch("town.main.commands", global_commands):
+            await run_tick()
+
+        # lisi 的 decide 必须收到 user_command="去买菜"
+        call_kwargs = fake_ctx["agents"]["lisi"].decide.call_args.kwargs
+        assert call_kwargs.get("user_command") == "去买菜"
+        # 队列已 pop(空 list)
+        assert global_commands["lisi"] == []
+    finally:
+        global_commands.clear()

@@ -38,6 +38,53 @@ async function init() {
   });
   draw();
   connectWS();
+  await initCommandPanel();
+}
+
+// V5:指令面板 — 填充 agent 下拉 + 绑定事件
+async function initCommandPanel() {
+  const sel = document.getElementById("command-agent");
+  if (!sel) return;
+  for (const id in agentNames) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = agentNames[id];
+    sel.appendChild(opt);
+  }
+  document.getElementById("command-send").addEventListener("click", sendCommand);
+  document.getElementById("command-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendCommand();
+  });
+}
+
+// V5:发送指令 — POST /api/command,XSS 防护用 textContent
+async function sendCommand() {
+  const sel = document.getElementById("command-agent");
+  const input = document.getElementById("command-input");
+  const status = document.getElementById("command-status");
+  const agentId = sel.value;
+  const cmd = input.value.trim();
+  if (!agentId) { status.textContent = "请先选 agent"; return; }
+  if (!cmd) { status.textContent = "指令不能空"; return; }
+  status.textContent = "发送中…";
+  try {
+    const resp = await fetch("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: agentId, command: cmd }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    status.textContent = `✅ 已排队 (队列长度 ${data.queue_len})`;
+    input.value = "";
+    addEvent(`📩 给 ${agentNames[agentId]} 下指令:"${cmd}" (位置 ${data.queue_len})`);
+  } catch (err) {
+    status.textContent = "❌ " + err.message;
+    addEvent("❌ 指令发送失败:" + err.message);
+  }
 }
 
 function draw() {

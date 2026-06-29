@@ -118,3 +118,45 @@ canvas { display: block; }
   line-height: 1.4;
 }
 .summary-item .ts, .event-item .ts { font-size: 11px; color: #888; margin-right: 4px; }
+
+/* V5:指令面板 — 底部 fixed,用户给 agent 下指令 */
+#command-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid #888;
+  border-radius: 24px;
+  padding: 8px 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  z-index: 15;
+  font-size: 13px;
+}
+#command-panel select, #command-panel input, #command-panel button {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+#command-panel input {
+  width: 200px;
+}
+#command-panel button {
+  background: #4ECDC4;
+  color: #fff;
+  border-color: #4ECDC4;
+  cursor: pointer;
+}
+#command-panel button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+#command-status {
+  font-size: 12px;
+  color: #888;
+  margin-left: 4px;
+}

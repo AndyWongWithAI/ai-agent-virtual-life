@@ -30,7 +30,7 @@ class Agent:
         self.decision_maker = DecisionMaker(llm)
         self.schedule = ScheduleLock()
 
-    async def decide(self, world_snapshot: dict) -> Action:
+    async def decide(self, world_snapshot: dict, user_command: str | None = None) -> Action:
         now = datetime.now()
         forced = self.schedule.forced_action(now)
         recent = await self.stm.recent(self.agent_id, n=10)
@@ -47,6 +47,7 @@ class Agent:
             recent_summary=recent_summary,
             forced_action=forced,
             legal_targets=world_snapshot.get("legal_targets", []),
+            user_command=user_command,
         )
         # V6:反思调度已上移到 town.main.run_tick 末尾(带 bus 引用),
         # 这里不再触发(避免双重触发 + 拿不到 bus)。

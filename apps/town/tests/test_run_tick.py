@@ -89,7 +89,7 @@ def _make_ctx(num_agents: int, world: World, trigger_value: bool = True):
     }, store
 
 
-async def _fake_decide(self, snap):
+async def _fake_decide(self, snap, user_command=None):
     from agent_runtime.actions import Action
 
     return Action(name="idle", target=None)

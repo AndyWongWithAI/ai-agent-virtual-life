@@ -26,9 +26,10 @@ from datetime import datetime
 from itertools import combinations
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from agent_behavior_orchestrator import TickScheduler
 from event_bus import Topic
@@ -45,6 +46,9 @@ tick_task: asyncio.Task | None = None
 bus_task: asyncio.Task | None = None  # C1 fix:保留引用,避免 GC
 # WebSocket 客户端连接列表(广播用)
 ws_clients: list[WebSocket] = []
+# V5:用户指令队列,agent_id -> [cmd1, cmd2, ...]
+# 模块级 dict(town 单进程 OK;多进程会不一致,见 brief 风险)
+commands: dict[str, list[str]] = defaultdict(list)
 
 
 @asynccontextmanager
@@ -154,7 +158,12 @@ async def run_tick():
     last_actions: dict[str, str] = {}
     for agent_id, agent in ctx["agents"].items():
         snap = ctx["world"].snapshot(agent_id)
-        action = await agent.decide(snap)
+        # V5:从命令队列 pop 一条指令(若有),注入决策上下文
+        user_cmd = None
+        if commands.get(agent_id):
+            user_cmd = commands[agent_id].pop(0)
+            logger.info("V5: agent %s 收到指令: %s", agent_id, user_cmd)
+        action = await agent.decide(snap, user_command=user_cmd)
         last_actions[agent_id] = action.name
         # I2 fix:用 DEFAULT_LOCATIONS 校验,消除硬编码
         if action.name == "go_to" and action.target in DEFAULT_LOCATIONS:
@@ -275,6 +284,43 @@ async def list_agents():
     ]
 
 
+class CommandRequest(BaseModel):
+    agent_id: str
+    command: str
+
+
+@app.post("/api/command")
+async def post_command(req: CommandRequest):
+    """用户给单个 agent 下指令。指令排队,下次 tick 由 prompt 注入。
+
+    Returns: {"status": "queued", "agent_id": "...", "command": "...", "queue_len": N}
+    """
+    assert ctx is not None
+    # 校验 agent 存在
+    if req.agent_id not in ctx["agents"]:
+        raise HTTPException(status_code=404, detail=f"unknown agent: {req.agent_id}")
+    if not req.command.strip():
+        raise HTTPException(status_code=400, detail="command 不能为空")
+    commands[req.agent_id].append(req.command.strip())
+    return {
+        "status": "queued",
+        "agent_id": req.agent_id,
+        "command": req.command.strip(),
+        "queue_len": len(commands[req.agent_id]),
+    }
+
+
+@app.get("/api/agents/{agent_id}/commands")
+async def get_commands(agent_id: str):
+    """查看某 agent 当前 pending 指令队列(不消费,只读)"""
+    if agent_id not in (ctx["agents"] if ctx else {}):
+        raise HTTPException(status_code=404, detail=f"unknown agent: {agent_id}")
+    return {
+        "agent_id": agent_id,
+        "pending": list(commands.get(agent_id, [])),
+    }
+
+
 @app.get("/api/agents/{agent_id}/status")
 async def agent_status(agent_id: str):
     """单个 agent 详细状态
@@ -289,7 +335,6 @@ async def agent_status(agent_id: str):
     assert ctx is not None
     persona = next((p for p in ctx["personas"] if p["id"] == agent_id), None)
     if persona is None:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"unknown agent: {agent_id}")
     snap = ctx["world"].snapshot(agent_id)
     summaries = await ctx["ltm"].recent_summaries(agent_id, n=3)

@@ -16,7 +16,7 @@ PROMPT_TEMPLATE = """你是 {name},一个虚拟小镇居民。当前:
 - 邻接:{adjacency}
 - 天气:{weather}
 - 近期反思:{recent_summary}
-
+{user_command_section}
 可去的地点只有(go_to 只能选这些):{legal_targets}
 
 请决定你接下来要做什么。从以下动作里选一个:go_to(去某地,target 必须是上面的合法地点)、talk_to(跟某人说话)、eat(吃饭)、sleep(睡觉)、work(工作)、idle(发呆)。
@@ -33,7 +33,8 @@ class DecisionMaker:
     async def decide(self, *, name: str, now_str: str, weekday: str, status_bar: "str | dict",
                      location: str, adjacency: list[str], weather: str,
                      recent_summary: str, forced_action: Action | None,
-                     legal_targets: list[str] | None = None) -> Action:
+                     legal_targets: list[str] | None = None,
+                     user_command: str | None = None) -> Action:
         if forced_action is not None:
             return forced_action
         # V2:status_bar 现在是 dict(World.snapshot 结构化输出),
@@ -42,10 +43,16 @@ class DecisionMaker:
             status_bar_str = ", ".join(f"{k} {v}" for k, v in status_bar.items())
         else:
             status_bar_str = status_bar
+        # V5:用户指令段(若有)
+        if user_command:
+            user_command_section = f"- 【用户指令】:{user_command}\n请优先响应这条用户指令\n"
+        else:
+            user_command_section = ""
         prompt = PROMPT_TEMPLATE.format(
             name=name, now_str=now_str, weekday=weekday, status_bar=status_bar_str,
             location=location, adjacency=", ".join(adjacency) or "无",
             weather=weather, recent_summary=recent_summary or "无",
+            user_command_section=user_command_section,
             legal_targets="、".join(legal_targets) if legal_targets else "(无限制)",
         )
         result = await self.llm.call(
