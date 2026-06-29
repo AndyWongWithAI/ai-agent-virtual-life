@@ -16,6 +16,7 @@ const eventsEl = document.getElementById("events");
 let agentPositions = {};  // agent_id -> location
 let agentNames = {};  // agent_id -> name
 let agentColors = {};  // agent_id -> color
+let memorySummaries = [];  // 最近 5 条 {ts, agent_id, text}
 
 async function init() {
   let agents;
@@ -77,6 +78,24 @@ function addEvent(text) {
   if (eventsEl.children.length > 30) eventsEl.removeChild(eventsEl.lastChild);
 }
 
+function drawMemoryPanel() {
+  const listEl = document.getElementById("memory-list");
+  if (!listEl) return;
+  listEl.innerHTML = "";
+  for (const m of memorySummaries) {
+    const div = document.createElement("div");
+    div.className = "memory-item";
+    const ts = new Date(m.ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+    div.innerHTML =
+      `<span class="ts">[${ts}]</span>` +
+      `<span class="agent">${agentNames[m.agent_id] || m.agent_id}:</span>` +
+      `<div class="text"></div>`;
+    // 用 textContent 防 XSS(虽然后端是 LLM 输出,但仍要防)
+    div.querySelector(".text").textContent = m.text;
+    listEl.appendChild(div);
+  }
+}
+
 function connectWS() {
   // HTTPS 下浏览器自动用 wss://,HTTP 下用 ws://
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
@@ -105,6 +124,16 @@ function connectWS() {
         addEvent(
           `💬 ${agentNames[msg.agent_id] || msg.agent_id}: ${msg.content || ""}`
         );
+        break;
+      }
+      case "memory.reflect": {
+        memorySummaries.unshift({
+          ts: msg.period_end || new Date().toISOString(),
+          agent_id: msg.agent_id,
+          text: msg.text || "(空摘要)",
+        });
+        if (memorySummaries.length > 5) memorySummaries.length = 5;
+        drawMemoryPanel();
         break;
       }
       default:

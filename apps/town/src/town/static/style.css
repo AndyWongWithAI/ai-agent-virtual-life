@@ -8,3 +8,46 @@ canvas { display: block; }
   background: #fff; border: 1px solid #ddd; padding: 10px;
 }
 .event { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 14px; }
+#memory-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 320px;
+  max-height: 360px;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #888;
+  border-radius: 8px;
+  padding: 10px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  font-size: 13px;
+  z-index: 10;
+}
+#memory-panel h3 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: #333;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 4px;
+}
+.memory-item {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #f5f5f5;
+  border-left: 3px solid #4ECDC4;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+.memory-item .agent {
+  font-weight: bold;
+  color: #2c5f5f;
+  margin-right: 6px;
+}
+.memory-item .ts {
+  font-size: 11px;
+  color: #888;
+}
+.memory-item .text {
+  margin-top: 4px;
+  color: #333;
+}
