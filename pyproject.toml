@@ -33,5 +33,11 @@ asyncio_mode = "auto"
 testpaths = ["packages", "apps"]
 markers = [
     "integration: requires real docker postgres+redis (deselect with '-m \"not integration\"')",
+    "production: e2e tests against deployed town (https://life.intelab.cn, deselect with '-m \"not production\"')",
 ]
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not production'"
+
+[dependency-groups]
+dev = [
+    "playwright>=1.60.0",
+]
