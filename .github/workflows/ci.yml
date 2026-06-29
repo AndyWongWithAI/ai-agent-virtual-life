@@ -42,4 +42,6 @@ jobs:
       - name: Sync deps
         run: uv sync --all-packages --all-groups
       - name: Run all tests (unit + integration)
-        run: uv run pytest --override-ini="addopts=" -v
+        # production e2e 需要访问公网 https://life.intelab.cn,CI runner 不可达,
+        # 显式 deselect(注意:addopts 已被 --override-ini 清空,需要 -m 显式过滤)
+        run: uv run pytest -m "not production" -v
