@@ -1,27 +1,38 @@
 # apps/town/Dockerfile
-# 基于 python:3.12-slim,装 uv,从 monorepo 根 uv sync 全部 workspace
-# 启动 town FastAPI(uvicorn),--app-dir 让 uvicorn 知道 town 包路径
-FROM python:3.12-slim
+# 优化策略(2026-06-29 #67 任务):
+# 1. uv 不 pip install,直接 COPY ghcr.io/astral-sh/uv 二进制(避免 26MB wheel 重下载)
+# 2. layer 顺序:lockfile + workspace 成员先 COPY → uv sync 创建 venv → town source 最后 COPY
+#    (town source 高频改动不会触发 venv 重 build)
+# 3. uv cache 持久化(--mount=type=cache,BuildKit)
+# 4. apt 一次到位装 curl + ca-certificates(健康检查 + uv 二进制 HTTPS)
+# 5. 需要 BuildKit 启用(本地: DOCKER_BUILDKIT=1 docker build ...;GH Actions: docker/build-push-action@v5 默认开)
 
-# curl 用于 docker healthcheck
+FROM python:3.12-slim AS base
+
+# 一次到位装 curl(健康检查)+ ca-certificates(uv 二进制 HTTPS 下发)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir uv
+# 拷 uv 二进制,跳过 pip install uv(节省 ~11min cold build)
+COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /uvx /bin/
 
 WORKDIR /app
 
-# 先拷 lockfile 走更好的 Docker layer cache
+# Lockfile + workspace 成员 + town pyproject.toml 先拷,uv sync 建 venv(慢,layer cache 友好)
 COPY pyproject.toml uv.lock ./
-COPY apps/ ./apps/
 COPY packages/ ./packages/
+COPY apps/town/pyproject.toml ./apps/town/pyproject.toml
 
-# 全部 workspace 包 + 全部 groups(dev 也要,test 跑过用)
-RUN uv sync --all-packages --all-groups
+# uv cache 持久化(跨 build 复用,BuildKit 必需)
+# town source 后拷,town source 高频改动不触发 venv layer 重建
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --all-packages --all-groups
+
+# town source 最后拷(高频改动不触发 venv layer 重建)
+COPY apps/ ./apps/
 
 EXPOSE 8000
-
 ENV PYTHONUNBUFFERED=1
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
