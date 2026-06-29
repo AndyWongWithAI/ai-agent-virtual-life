@@ -46,6 +46,7 @@ class Agent:
             weather=world_snapshot.get("weather", "晴"),
             recent_summary=recent_summary,
             forced_action=forced,
+            legal_targets=world_snapshot.get("legal_targets", []),
         )
         # C4 fix:反思失败不应拖垮本 tick,不让其他 agent 跟着停摆
         try:

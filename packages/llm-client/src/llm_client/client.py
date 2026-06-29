@@ -111,6 +111,15 @@ class LLMClient:
 
         text = await retry_with_backoff(_attempt, max_attempts=3)
         if json_schema:
+            # 容忍 R1 类思考模型的 <think>...</think> 包裹
+            if "<think>" in text:
+                if "</think>" in text:
+                    text = text.rsplit("</think>", 1)[-1].strip()
+                else:
+                    # think 没闭合(可能 max_tokens 截断),fallback:从 text 中找 { 开始
+                    brace_idx = text.find("{")
+                    if brace_idx >= 0:
+                        text = text[brace_idx:]
             try:
                 parsed = json.loads(text)
                 for k in json_schema.get("required", []):
