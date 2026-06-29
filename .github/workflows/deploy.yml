@@ -1,0 +1,53 @@
+# .github/workflows/deploy.yml — ai-agent-virtual-life 生产部署
+#
+# 复用 arch-platform 的可复用 workflow:
+#   uses: AndyWongWithAI/Architecture-Platform/.github/workflows/deploy.yml@v1.0.1
+#
+# 触发:
+#   - workflow_run: 只在 ci.yml 跑完后才触发(避免 CI 没绿就部署)
+#   - workflow_dispatch: 手动触发(回滚 / 紧急修复)
+#
+# Secrets(在 GitHub repo settings → Secrets):
+#   SSH_USER     = "root"
+#   SSH_KEY      = ~/.ssh/github_actions_arch_platform 私钥
+#                  (一把 key 跨项目复用,见 ~/.claude/memory/server-1.md)
+#   ARCH_API_KEY = ~/.claude/secrets.json → architecture_blueprint.architecture_api_key
+#
+# arch_component 留空(2026-06-29 查 arch 平台 404,后续 Phase 6.0 之后再登记)。
+# 该文件极简,所有部署逻辑 + 首次 clone + healthcheck + arch 登记
+# 都在可复用 workflow 里(架构平台统一维护)。
+
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to huawei-1
+    # workflow_run 触发时,只有上游 CI 成功才部署
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success')
+    uses: AndyWongWithAI/Architecture-Platform/.github/workflows/deploy.yml@v1.0.1
+    with:
+      host: "124.71.219.208"
+      service_name: "ai-agent-virtual-life"
+      deploy_path: "/opt/services/ai-agent-virtual-life"
+      compose_file: "infra/docker-compose.yml"
+      healthcheck_url: "http://127.0.0.1:8000/health"
+      arch_component: ""
+      arch_platform_url: "https://arch.intelab.cn"
+      git_ref: "master"
+    secrets:
+      ssh_user: ${{ secrets.SSH_USER }}
+      ssh_key: ${{ secrets.SSH_KEY }}
+      arch_api_key: ${{ secrets.ARCH_API_KEY }}

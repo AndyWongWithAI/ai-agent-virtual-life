@@ -2,6 +2,8 @@
 # 端口映射说明(2026-06-29):本机 Postgres 18 已占 5432(babybus 项目),docker host port 改 5433 避免冲突。
 # 同理 Redis 6379 改 6380 防止与其他项目潜在冲突。
 # 容器内端口保持 5432/6379 不变(只改 host 端口)。
+# app service(2026-06-29):走 Dockerfile 启 town FastAPI(uvicorn),
+# env_file 指向 apps/town/.env(CI 跑没这个文件也能启,/health 不依赖外部)。
 services:
   postgres:
     image: postgres:16-alpine
@@ -28,6 +30,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  app:
+    build:
+      context: ..
+      dockerfile: apps/town/Dockerfile
+    env_file:
+      - ../apps/town/.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   town_pg:

@@ -265,6 +265,20 @@ static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
+@app.get("/health")
+async def health():
+    """健康检查(deploy workflow 复用)
+
+    不依赖 Redis/Postgres/LLM,只读 ctx(可能为 None 当 bootstrap 失败时)。
+    永远返回 200,只要进程在跑。
+    """
+    return {
+        "status": "ok",
+        "agents": len(ctx["agents"]) if ctx else 0,
+        "ts": datetime.now().isoformat(),
+    }
+
+
 @app.get("/")
 async def root():
     """返回 index.html(Task 12 会创建)"""
