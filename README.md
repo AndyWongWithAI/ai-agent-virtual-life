@@ -1,5 +1,7 @@
 # AI 智能体虚拟空间生活
 
+[![CI](https://github.com/AndyWongWithAI/ai-agent-virtual-life/actions/workflows/ci.yml/badge.svg)](https://github.com/AndyWongWithAI/ai-agent-virtual-life/actions/workflows/ci.yml)
+
 LLM 驱动的虚拟小镇,智能体 24/7 在跑,观察者通过 2D 顶视图围观。
 
 5 个性格各异的 agent(李四/王五/张伟/刘娜/陈雷)住在一个 5 地点小镇里
