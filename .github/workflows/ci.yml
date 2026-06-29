@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: town
+          POSTGRES_PASSWORD: town_dev_pwd
+          POSTGRES_DB: town
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U town -d town"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://town:town_dev_pwd@localhost:5432/town
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: pip install uv
+      - name: Sync deps
+        run: uv sync --all-packages --all-groups
+      - name: Run all tests (unit + integration)
+        run: uv run pytest --override-ini="addopts=" -v
