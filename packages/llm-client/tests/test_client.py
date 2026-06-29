@@ -197,3 +197,67 @@ async def test_call_records_each_successful_attempt():
     assert len(record_calls) == 1
     assert record_calls[0] == 0.005
     await client.aclose()
+
+
+# === B4/B6 fix:R1 类思考模型 <think> 标签 ===
+@pytest.mark.asyncio
+async def test_think_wrapped_json_parsed():
+    """B4: LLM 返回 <think>...</think>\n{json} → 正确剥离 think,解析 JSON"""
+    client = LLMClient(
+        api_key="test", redis_url="redis://localhost:6380/0", daily_budget_cny=10.0,
+    )
+    wrapped = (
+        '<think>分析中:李四在家,决定去公园</think>'
+        '{"reasoning":"去公园散步","action":{"name":"go_to","target":"公园","params":{}}}'
+    )
+    with _patch_record(client), \
+         patch.object(client, "_raw_call", AsyncMock(return_value=(wrapped, 0.001))):
+        result = await client.call(
+            [{"role": "user", "content": "hi"}],
+            json_schema={"required": ["reasoning", "action"]},
+        )
+    assert result["reasoning"] == "去公园散步"
+    assert result["action"]["target"] == "公园"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_think_no_close_tag_brace_fallback():
+    """B6: max_tokens 截断导致 <think> 无 </think> 闭合,从首个 { 开始 fallback 解析"""
+    client = LLMClient(
+        api_key="test", redis_url="redis://localhost:6380/0", daily_budget_cny=10.0,
+    )
+    truncated = (
+        "<think>还在思考中...但是 max_tokens 截断了\n"
+        '{"reasoning":"简短决策","action":{"name":"idle","target":null,"params":{}}}'
+    )
+    with _patch_record(client), \
+         patch.object(client, "_raw_call", AsyncMock(return_value=(truncated, 0.001))):
+        result = await client.call(
+            [{"role": "user", "content": "hi"}],
+            json_schema={"required": ["reasoning", "action"]},
+        )
+    assert result["reasoning"] == "简短决策"
+    assert result["action"]["name"] == "idle"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_think_close_tag_must_be_last_occurrence():
+    """B4 边界:LLM 在 think 块结束后又输出 {text},应取最后一个 </think> 之后"""
+    client = LLMClient(
+        api_key="test", redis_url="redis://localhost:6380/0", daily_budget_cny=10.0,
+    )
+    text_with_two_thinks = (
+        '<think>first thought</think>中间废话{not_json}'
+        '<think>second thought</think>'
+        '{"reasoning":"最终决策","action":{"name":"sleep","target":"bed","params":{}}}'
+    )
+    with _patch_record(client), \
+         patch.object(client, "_raw_call", AsyncMock(return_value=(text_with_two_thinks, 0.001))):
+        result = await client.call(
+            [{"role": "user", "content": "hi"}],
+            json_schema={"required": ["reasoning", "action"]},
+        )
+    assert result["reasoning"] == "最终决策"
+    await client.aclose()
