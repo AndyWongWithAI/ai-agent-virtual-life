@@ -27,7 +27,7 @@ from itertools import combinations
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -37,6 +37,7 @@ from memory_reflection import Event
 from virtual_world_engine import DEFAULT_LOCATIONS
 
 from .bootstrap import bootstrap
+from . import metrics as m
 
 # I17 fix(P3 #109):logging.basicConfig 必须在模块顶部(import 时即生效),
 # 否则 uvicorn 启动走 `app` 入口时,__main__ 块不会执行,所有 logger.exception
@@ -166,6 +167,7 @@ async def tick_loop():
 async def run_tick():
     """每个 tick:让 5 个 agent 各自 decide 一次,记录到 event_store + 推总线"""
     assert ctx is not None
+    m.town_tick_total.inc()  # Phase 7:tick 计数
     last_actions: dict[str, str] = {}
     for agent_id, agent in ctx["agents"].items():
         snap = ctx["world"].snapshot(agent_id)
@@ -184,9 +186,11 @@ async def run_tick():
                 "P3 fallback: agent %s decide failed (%s), using idle",
                 agent_id, e,
             )
+            m.town_decide_fail_total.labels(agent_id=agent_id).inc()  # Phase 7
             from agent_runtime.actions import Action
             action = Action(name="idle", target=None, params={})
         last_actions[agent_id] = action.name
+        m.town_decisions_total.labels(action=action.name).inc()  # Phase 7
         # I2 fix:用 DEFAULT_LOCATIONS 校验,消除硬编码
         if action.name == "go_to" and action.target in DEFAULT_LOCATIONS:
             ctx["world"].place(agent_id, action.target)
@@ -235,8 +239,11 @@ async def run_tick():
     # 失败必须 try/except,不能 crash tick_loop(其他 agent 跟着停摆)
     for agent_id in ctx["agents"]:
         try:
-            await ctx["reflector"].maybe_reflect(agent_id, bus=ctx["bus"])
+            result = await ctx["reflector"].maybe_reflect(agent_id, bus=ctx["bus"])
+            if result is not None:
+                m.town_reflects_total.labels(agent_id=agent_id).inc()  # Phase 7
         except Exception:
+            m.town_reflect_fails_total.inc()  # Phase 7
             logger.exception("reflector.maybe_reflect failed for %s", agent_id)
 
 
@@ -264,8 +271,10 @@ async def run_dialogue(a_id: str, b_id: str, location: str):
             location=location,
         )
     except Exception:
+        m.town_dialogue_fails_total.inc()  # Phase 7
         logger.exception("dialogue LLM generate failed")
         return
+    m.town_dialogues_total.inc()  # Phase 7
     for who, content in msgs:
         speaker_id = a_id if who == a.name else b_id
         await ctx["event_store"].add_dialogue_message(did, speaker_id, content)
@@ -324,6 +333,10 @@ async def post_command(req: CommandRequest):
     if not req.command.strip():
         raise HTTPException(status_code=400, detail="command 不能为空")
     commands[req.agent_id].append(req.command.strip())
+    # Phase 7:上报 command 队列长度
+    m.town_command_queue_size.labels(agent_id=req.agent_id).set(
+        len(commands[req.agent_id])
+    )
     return {
         "status": "queued",
         "agent_id": req.agent_id,
@@ -382,6 +395,7 @@ async def ws(ws: WebSocket):
     """WebSocket:订阅 AGENT_DECISION / DIALOGUE_MESSAGE,推送给客户端"""
     await ws.accept()
     ws_clients.append(ws)
+    m.town_ws_clients.set(len(ws_clients))  # Phase 7
     try:
         # 保持连接,客户端不发消息也行
         while True:
@@ -391,6 +405,7 @@ async def ws(ws: WebSocket):
     finally:
         if ws in ws_clients:
             ws_clients.remove(ws)
+        m.town_ws_clients.set(len(ws_clients))  # Phase 7
 
 
 # 静态文件(static/)— Task 12 会填内容
@@ -411,6 +426,22 @@ async def health():
         "agents": len(ctx["agents"]) if ctx else 0,
         "ts": datetime.now().isoformat(),
     }
+
+
+# Phase 7 运维第 1 步:Prometheus 抓取端点
+# 暴露 Counter/Gauge 业务指标,供 Prometheus server 定时 scrape
+# 不带鉴权(只暴露指标不含敏感数据,nginx /metrics 限制内网或 VPN 访问)
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+
+@app.get("/metrics")
+async def metrics_endpoint():
+    """Prometheus 抓取端点(P7-1)
+
+    格式:prometheus text format
+    Counter/Gauge 来自 town.metrics 模块
+    """
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/")

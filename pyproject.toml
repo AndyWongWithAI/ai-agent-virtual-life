@@ -3,7 +3,9 @@ name = "ai-agent-virtual-life"
 version = "0.1.0"
 description = "LLM 驱动的虚拟小镇,智能体 24/7 在跑"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "prometheus-client>=0.25.0",
+]
 
 [tool.uv.workspace]
 members = [
