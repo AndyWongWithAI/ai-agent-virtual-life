@@ -37,8 +37,52 @@ async function init() {
     agentColors[a.id] = AGENT_COLORS[i % AGENT_COLORS.length];
   });
   draw();
+  // 任务 #125/#126(Bug4/5):启动时拉历史,避免刷新后从 0 开始
+  await Promise.all([loadHistoricalEvents(), loadHistoricalMemories()]);
   connectWS();
   await initCommandPanel();
+}
+
+// 任务 #125(Bug4):init 拉 /api/events,append 到 events div(asc 顺序,新事件 prepend 到顶部对齐)
+async function loadHistoricalEvents() {
+  try {
+    const resp = await fetch("/api/events?limit=30");
+    if (!resp.ok) return;
+    const events = await resp.json();
+    for (const ev of events) {
+      const name = agentNames[ev.agent_id] || ev.agent_id;
+      const div = document.createElement("div");
+      div.className = "event";
+      const t = new Date(ev.ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+      div.textContent = `${t} - ${name}: [${ev.kind}] ${ev.content}`;
+      // asc: 最早在上,新事件 prepend 后仍在上方,保持时序顺序
+      eventsEl.appendChild(div);
+    }
+    while (eventsEl.children.length > 30) eventsEl.removeChild(eventsEl.firstChild);
+  } catch (e) {
+    console.warn("[init] /api/events failed:", e);
+  }
+}
+
+// 任务 #126(Bug5):init 拉 /api/memory-summaries,填 memorySummary 然后渲染面板
+async function loadHistoricalMemories() {
+  try {
+    const resp = await fetch("/api/memory-summaries?limit=5");
+    if (!resp.ok) return;
+    const items = await resp.json();
+    // 后端返 desc,前端按 desc 存进头部
+    for (const m of items.reverse()) {
+      memorySummaries.unshift({
+        ts: m.ts,
+        agent_id: m.agent_id,
+        text: m.text,
+      });
+    }
+    if (memorySummaries.length > 5) memorySummaries.length = 5;
+    drawMemoryPanel();
+  } catch (e) {
+    console.warn("[init] /api/memory-summaries failed:", e);
+  }
 }
 
 // V5:指令面板 — 填充 agent 下拉 + 绑定事件
@@ -103,25 +147,60 @@ function draw() {
     ctx.fillText(name, loc.x, loc.y + 5);
   }
 
-  // 画 agent(V2:同时记录点击坐标)
-  for (const [id, loc_name] of Object.entries(agentPositions)) {
+  // 任务 #122(Bug1):按 location 分组,同地点 agent 错位排开 ——
+  // 之前所有同地点 agent 都画在 (loc.x, loc.y-40),完全重叠,点击只能命中最顶层。
+  // 现在按 location 分组后计算 (dx, dy) 偏移;≤3 单行,4-5 两行。
+  const byLoc = {};
+  for (const id of Object.keys(agentPositions)) {
+    const loc_name = agentPositions[id];
     const loc = LOCATIONS[loc_name];
     if (!loc) continue;
-    const x = loc.x;
-    const y = loc.y - 40;
-    const radius = 12;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, 2 * Math.PI);
-    ctx.fillStyle = agentColors[id];
-    ctx.fill();
-    ctx.strokeStyle = "#000";
-    ctx.stroke();
-    ctx.fillStyle = "#000";
-    ctx.font = "11px sans-serif";
-    ctx.fillText(agentNames[id], x, y - 18);
-    // 记录渲染坐标(给点击用)
-    agentRenderPositions[id] = { x, y, radius };
+    if (!byLoc[loc_name]) byLoc[loc_name] = [];
+    byLoc[loc_name].push(id);
   }
+  // 同一 location 内按 id 字典序排序,保证布局稳定(刷新/WS 重绘结果一致)
+  for (const loc_name in byLoc) byLoc[loc_name].sort();
+
+  for (const [loc_name, ids] of Object.entries(byLoc)) {
+    const loc = LOCATIONS[loc_name];
+    if (!loc) continue;
+    const offsets = computeAgentOffsets(ids.length);
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const x = loc.x + offsets[i].dx;
+      const y = (loc.y - 40) + offsets[i].dy;
+      const radius = 12;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = agentColors[id];
+      ctx.fill();
+      ctx.strokeStyle = "#000";
+      ctx.stroke();
+      ctx.fillStyle = "#000";
+      ctx.font = "11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(agentNames[id], x, y - 18);
+      agentRenderPositions[id] = { x, y, radius };
+    }
+  }
+}
+
+// 任务 #122:同地点 N 个 agent 的偏移(dx, dy)。
+// 1→中心;2-3→水平单行;4-5→上下两行(上排 2/3,下排 2)。最多 5 个。
+function computeAgentOffsets(N) {
+  if (N <= 0) return [];
+  if (N === 1) return [{ dx: 0, dy: 0 }];
+  if (N === 2) return [{ dx: -22, dy: 0 }, { dx: 22, dy: 0 }];
+  if (N === 3) return [{ dx: -44, dy: 0 }, { dx: 0, dy: 0 }, { dx: 44, dy: 0 }];
+  if (N === 4) return [
+    { dx: -22, dy: -28 }, { dx: 22, dy: -28 },
+    { dx: -22, dy: 0 },  { dx: 22, dy: 0 },
+  ];
+  // N === 5
+  return [
+    { dx: -44, dy: -28 }, { dx: 0, dy: -28 }, { dx: 44, dy: -28 },
+    { dx: -22, dy: 0 },  { dx: 22, dy: 0 },
+  ];
 }
 
 function addEvent(text) {

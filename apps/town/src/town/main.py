@@ -402,6 +402,60 @@ async def agent_status(agent_id: str):
     }
 
 
+@app.get("/api/events")
+async def list_events(limit: int = 30):
+    """任务 #125(Bug4):最近 N 条全局事件,按时间正序输出(前端 init 拉一次)。
+
+    默认 limit=30,前端 events 面板初始化时调用,避免刷新后从 0 开始。
+    时序升序返回,前端 append 后形成"上=最早 下=最近",新 WS 事件 prepend 即对齐。
+    """
+    assert ctx is not None
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit 必须在 1-200")
+    # 拿到 desc 排序后反转,得到 asc
+    events = await ctx["event_store"].list_events(limit=limit)
+    events_asc = list(reversed(events))
+    return [
+        {
+            "ts": e.ts.isoformat(),
+            "agent_id": e.agent_id,
+            "kind": e.kind,
+            "content": e.content,
+        }
+        for e in events_asc
+    ]
+
+
+@app.get("/api/memory-summaries")
+async def list_memory_summaries(limit: int = 5):
+    """任务 #126(Bug5):全局最近 N 条 LTM 反思摘要(跨所有 agent),按 period_end 倒序。
+
+    用于前端「近期记忆」面板初始填充——若 6h gate 尚未触发,LTM 为空,
+    前端面板初始显示"暂无反思摘要"。
+    """
+    assert ctx is not None
+    if limit < 1 or limit > 50:
+        raise HTTPException(status_code=400, detail="limit 必须在 1-50")
+    all_summaries: list = []
+    for agent_id in ctx["agents"]:
+        summaries = await ctx["ltm"].recent_summaries(agent_id, n=3)
+        all_summaries.extend(summaries)
+    # 按 period_end desc 排序后取前 N
+    all_summaries.sort(key=lambda s: s.period_end, reverse=True)
+    top = all_summaries[:limit]
+    return [
+        {
+            "ts": s.period_end.isoformat(),
+            "agent_id": s.agent_id,
+            "text": s.text,
+        }
+        for s in top
+    ]
+
+
+@app.websocket("/ws")
+
+
 @app.websocket("/ws")
 async def ws(ws: WebSocket):
     """WebSocket:订阅 AGENT_DECISION / DIALOGUE_MESSAGE,推送给客户端"""
