@@ -43,7 +43,7 @@ async def test_event_store_real_append_and_list(event_store):
         payload={"source": "integration_test"},
     )
     assert eid > 0
-    events = await event_store.list(agent_id="int_test_agent", kind="decision")
+    events = await event_store.list_events(agent_id="int_test_agent", kind="decision")
     assert any(e.id == eid and e.content == "test integration event" for e in events)
 
 
@@ -89,7 +89,7 @@ async def test_tick_loop_one_iteration_fake_llm(redis_url, database_url):
         agent_id="int_tick_a", kind="decision",
         content=str(action.to_dict()),
     )
-    events = await store.list(agent_id="int_tick_a", kind="decision")
+    events = await store.list_events(agent_id="int_tick_a", kind="decision")
     assert any(e.id == eid for e in events)
 
     # 验证 LLM 真被调(且是 fake LLM,无网络)

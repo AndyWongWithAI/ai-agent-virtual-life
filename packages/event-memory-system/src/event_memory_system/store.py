@@ -21,7 +21,7 @@ class EventStore:
             await s.commit()
             return e.id
 
-    async def list(
+    async def list_events(
         self,
         agent_id: str | None = None,
         since: datetime | None = None,

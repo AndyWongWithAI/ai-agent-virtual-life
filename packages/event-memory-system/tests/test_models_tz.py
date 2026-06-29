@@ -25,7 +25,7 @@ async def test_event_default_ts_is_timezone_aware():
     store = EventStore(db_url="sqlite+aiosqlite:///:memory:")
     await store.init_schema()
     eid = await store.append(agent_id="a1", kind="decision", content="回家")
-    events = await store.list(agent_id="a1")
+    events = await store.list_events(agent_id="a1")
     assert len(events) == 1
     assert events[0].ts.tzinfo is not None, (
         f"Event.ts should be tz-aware after insert; got {events[0].ts!r}"
