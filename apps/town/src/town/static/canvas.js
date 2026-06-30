@@ -1,11 +1,7 @@
 // apps/town/src/town/static/canvas.js
-const LOCATIONS = {
-  "李四家":  { x: 100, y: 100, color: "#FFD700" },
-  "王五家":  { x: 300, y: 100, color: "#87CEEB" },
-  "客厅":   { x: 200, y: 250, color: "#98FB98" },
-  "厨房":   { x: 350, y: 300, color: "#FFA07A" },
-  "公园":   { x: 600, y: 350, color: "#90EE90" },
-};
+// 阶段 3 (REQ-7cfc9696):LOCATIONS 从 /api/locations 派生,不再硬编码。
+// init() 先 await loadLocations() 再 loadAgents(),保证后续 draw() 拿到地图。
+let LOCATIONS = {};
 const AGENT_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#C39BD3"];
 
 const canvas = document.getElementById("map");
@@ -63,7 +59,77 @@ async function togglePause() {
   }
 }
 
+// 阶段 3:从 /api/locations 拉取地点并写入全局 LOCATIONS
+async function loadLocations() {
+  try {
+    const resp = await fetch("/api/locations");
+    if (!resp.ok) throw new Error(`/api/locations ${resp.status}`);
+    const data = await resp.json();
+    const arr = Array.isArray(data.locations) ? data.locations : [];
+    const map = {};
+    for (const loc of arr) {
+      if (!loc || typeof loc.name !== "string") continue;
+      map[loc.name] = {
+        x: Number(loc.x),
+        y: Number(loc.y),
+        color: typeof loc.color === "string" ? loc.color : "#888",
+        adjacency: Array.isArray(loc.adjacency) ? loc.adjacency : [],
+      };
+    }
+    LOCATIONS = map;
+  } catch (e) {
+    console.warn("[init] /api/locations failed, fallback empty:", e);
+    addEvent("⚠️ /api/locations 拉取失败:地图无地点可显示");
+  }
+}
+
+// 阶段 3:拉 /api/config-status,有 errors 时弹 toast(5s 自动隐藏)。
+// XSS 防护:所有内容用 textContent 写入,不拼接 innerHTML。
+async function loadConfigStatus() {
+  try {
+    const resp = await fetch("/api/config-status");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const errs = Array.isArray(data.errors) ? data.errors : [];
+    if (!errs.length) return;
+    showConfigToast(errs);
+  } catch (e) {
+    console.warn("[init] /api/config-status failed:", e);
+  }
+}
+
+function showConfigToast(errs) {
+  const el = document.getElementById("config-toast");
+  if (!el) return;
+  el.textContent = "";
+  const header = document.createElement("div");
+  header.textContent = `⚠️ 配置有 ${errs.length} 条问题,已回退默认`;
+  header.style.fontWeight = "bold";
+  header.style.marginBottom = "6px";
+  el.appendChild(header);
+  const top = errs.slice(0, 3);
+  for (const e of top) {
+    const line = document.createElement("div");
+    const file = (e && e.file) ? `[${e.file}]` : "[?]";
+    const msg = (e && e.message) ? String(e.message) : "(未知错误)";
+    line.textContent = `${file} ${msg}`;
+    el.appendChild(line);
+  }
+  if (errs.length > 3) {
+    const more = document.createElement("div");
+    more.textContent = `…还有 ${errs.length - 3} 条`;
+    more.style.opacity = "0.85";
+    el.appendChild(more);
+  }
+  el.classList.remove("hidden");
+  setTimeout(() => el.classList.add("hidden"), 5000);
+}
+
 async function init() {
+  // 阶段 3:顺序很重要 — 先 LOCATIONS,再 agents,否则首次 draw() 无地点
+  await loadLocations();
+  // 阶段 3:启动时拉配置状态,有 errors 弹 toast(不阻塞后续)
+  loadConfigStatus();
   let agents;
   try {
     const resp = await fetch("/api/agents");

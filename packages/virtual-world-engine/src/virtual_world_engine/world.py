@@ -13,7 +13,7 @@ def _clamp(v: int, lo: int = 0, hi: int = 100) -> int:
 
 
 class World:
-    def __init__(self):
+    def __init__(self, valid_locations: list[str] | None = None):
         self.clock = WorldClock()
         self._places: dict[str, str] = {}  # agent_id -> location
         # 任务 #113:World 拥有 4 维状态(单进程内存,SSOT)
@@ -21,6 +21,11 @@ class World:
         # 任务 #127(B1):每个 agent 最近一次动作 (action_name, target),供前端
         # 「近况」面板实时显示,与 6h LTM 反思(服务 LLM prompt)完全独立。
         self._latest_actions: dict[str, tuple[str, str | None]] = {}
+        # 阶段 3 (T6):允许外部注入合法地点列表(支持 YAML 自定义地点名)。
+        # 不传 → 回退 DEFAULT_LOCATIONS,保持向后兼容 6 个旧测试。
+        self._valid_locations: list[str] = (
+            list(valid_locations) if valid_locations is not None else list(DEFAULT_LOCATIONS)
+        )
 
     def _ensure_status(self, agent_id: str) -> dict[str, int]:
         """agent 首次出现时初始化为 INITIAL_STATUS(中性,克隆避免共享)"""
@@ -29,7 +34,7 @@ class World:
         return self._statuses[agent_id]
 
     def place(self, agent_id: str, location: str):
-        assert location in DEFAULT_LOCATIONS, f"Unknown location: {location}"
+        assert location in self._valid_locations, f"Unknown location: {location}"
         self._places[agent_id] = location
         # 登记该 agent 的状态(首次出现初始化)
         self._ensure_status(agent_id)
@@ -101,5 +106,5 @@ class World:
             "weather": "晴",  # MVP 先固定
             # 任务 #114:内部英文 key;任务 #113:真实计算的状态
             "status_bar": self.status_of(agent_id),
-            "legal_targets": list(DEFAULT_LOCATIONS),  # AD1/AD7:I2 fix 单一事实源
+            "legal_targets": list(self._valid_locations),  # AD1/AD7:I2 fix 单一事实源;阶段 3 支持 YAML 自定义地点
         }
