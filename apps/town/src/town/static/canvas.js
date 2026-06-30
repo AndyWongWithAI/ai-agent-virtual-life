@@ -59,6 +59,31 @@ async function togglePause() {
   }
 }
 
+// 阶段 3 收尾(任务 T9):重启生效 — 用户改完 TOWN_DATA_DIR YAML 后点一下
+// 复用基础设施 + 重建 world/agents,1s 后刷新页面让 WS 重新连接
+async function toggleRestart() {
+  const btn = document.getElementById("restart-toggle");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/api/restart", { method: "POST" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    addEvent(
+      `🔄 配置已重启生效(source=${data.source}, ${data.personas_count} 人 / ${data.locations_count} 地),正在刷新页面…`
+    );
+    // 1s 后刷新,让 WS 重新连接 + 确保后端 ctx 切换完成
+    setTimeout(() => location.reload(), 1000);
+  } catch (e) {
+    addEvent("❌ 重启失败:" + e.message);
+  } finally {
+    // 1.5s 后按钮恢复(若刷新未触发),防重复点期间保持 disabled
+    setTimeout(() => {
+      if (btn) btn.disabled = false;
+    }, 1500);
+  }
+}
+
 // 阶段 3:从 /api/locations 拉取地点并写入全局 LOCATIONS
 async function loadLocations() {
   try {
@@ -154,6 +179,9 @@ async function init() {
   // 任务 #131(P0 暂停):按钮点击切换。DOMContentLoaded 时绑定即可,这里 init 同步调一次
   const pauseBtn = document.getElementById("pause-toggle");
   if (pauseBtn) pauseBtn.addEventListener("click", togglePause);
+  // 阶段 3 收尾(任务 T9):重启生效按钮绑定
+  const restartBtn = document.getElementById("restart-toggle");
+  if (restartBtn) restartBtn.addEventListener("click", toggleRestart);
 }
 
 // 任务 #125(Bug4):init 拉 /api/events,append 到 events div(asc 顺序,新事件 prepend 到顶部对齐)

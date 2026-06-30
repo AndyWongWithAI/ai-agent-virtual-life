@@ -36,7 +36,7 @@ from event_bus import Topic
 from memory_reflection import Event
 from virtual_world_engine import DEFAULT_LOCATIONS, LABELS_ZH, STATUS_KEYS
 
-from .bootstrap import bootstrap
+from .bootstrap import bootstrap, bootstrap_reload
 from . import metrics as m
 
 # I17 fix(P3 #109):logging.basicConfig 必须在模块顶部(import 时即生效),
@@ -510,6 +510,71 @@ async def pause_town():
         logger.info("town paused")
         await _broadcast_control("paused")
     return {"paused": True}
+
+
+# --- 阶段 3 (REQ-7cfc9696) 收尾:重启生效端点(任务 T9) ---
+
+
+@app.post("/api/restart")
+async def restart_town():
+    """阶段 3 收尾:重新加载 YAML 配置 + 重建 world/agents。
+
+    复用 LLM / EventBus / Postgres / Reflector(避免重连花销,不踢 WS 客户端,
+    6h 反思状态连续)。返回新的 personas / locations 计数让前端 toast 显示。
+
+    流程:
+      1. 调 bootstrap_reload(prev_ctx=ctx) 复用基础设施
+      2. 替换全局 ctx
+      3. 广播 control(kind=restarted)让前端刷新页面
+      4. 返 {status, source, personas_count, locations_count}
+
+    失败(配置损坏):抛 500,前端显示 toast。
+    """
+    global ctx
+    # 暂停状态下不允许重启(避免状态不一致)— 先恢复
+    # 注:这里不强制,允许用户「暂停+重启」组合
+    try:
+        prev = ctx
+        new_ctx = await bootstrap_reload(prev_ctx=prev)
+    except Exception:
+        logger.exception("restart_town: bootstrap_reload failed")
+        raise HTTPException(
+            status_code=500,
+            detail="配置损坏,重启失败。请检查 YAML 后再试。",
+        )
+
+    ctx = new_ctx  # 替换全局 ctx(tick_loop 下次循环自然读新 ctx)
+
+    # 广播 restart 事件给所有 WS(前端收到后刷新页面)
+    payload = {
+        "topic": "town.control",
+        "kind": "restarted",
+        "source": new_ctx.get("config_source", "base"),
+        "personas_count": len(new_ctx.get("personas", [])),
+        "locations_count": len(new_ctx.get("locations", [])),
+    }
+    dead: list[WebSocket] = []
+    results = await asyncio.gather(
+        *[client.send_json(payload) for client in ws_clients],
+        return_exceptions=True,
+    )
+    for client, res in zip(list(ws_clients), results):
+        if isinstance(res, Exception):
+            dead.append(client)
+    for d in dead:
+        if d in ws_clients:
+            ws_clients.remove(d)
+
+    logger.info(
+        "town restarted: source=%s, personas=%d, locations=%d",
+        payload["source"], payload["personas_count"], payload["locations_count"],
+    )
+    return {
+        "status": "restarted",
+        "source": payload["source"],
+        "personas_count": payload["personas_count"],
+        "locations_count": payload["locations_count"],
+    }
 
 
 @app.post("/api/resume")

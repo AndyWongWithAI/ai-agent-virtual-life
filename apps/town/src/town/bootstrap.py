@@ -51,26 +51,7 @@ async def bootstrap() -> dict:
     # 1. 加载 personas + locations(阶段 3)
     #    优先级:TOWN_CONFIG_DIR(自定义)→ base(默认)
     #    errors 非空 → logger.warning + 回退 base;ctx["config_source"]="base"
-    custom_dir = os.getenv("TOWN_CONFIG_DIR")
-    personas, locations, errors = [], [], []
-    config_source = "base"
-    if custom_dir:
-        custom_path = Path(custom_dir)
-        personas, locations, errors = load_config(custom_path)
-        if errors:
-            logger.warning(
-                "[town] 自定义配置 %s 有 %d 条错误,回退到 base 默认:",
-                custom_path, len(errors),
-            )
-            for e in errors:
-                logger.warning("  - %s", e["message"])
-            personas, locations, errors = load_config(_BASE_CONFIG_DIR)
-            config_source = "base"  # 回退
-        else:
-            config_source = "custom"
-    else:
-        personas, locations, errors = load_config(_BASE_CONFIG_DIR)
-        config_source = "base"
+    personas, locations, errors, config_source = _load_config_with_fallback()
     if not personas or not locations:
         # 极端兜底:连 base 都坏,直接抛,不让服务带着空配置启动
         raise RuntimeError(
@@ -134,6 +115,109 @@ async def bootstrap() -> dict:
         "agents": agents,
         "personas": personas,
         # 阶段 3:配置相关字段供 /api/locations + /api/config-status 使用
+        "locations": locations,
+        "config_source": config_source,
+        "config_errors": errors,
+    }
+
+
+def _load_config_with_fallback() -> tuple[list[dict], list[dict], list[dict], str]:
+    """bootstrap() 与 bootstrap_reload() 共用的「读 YAML 配置 + 回退 base」逻辑。
+
+    优先 TOWN_CONFIG_DIR(自定义),有错/未设 → 回退到内置 base。
+
+    Returns:
+        (personas, locations, errors, config_source)
+        config_source ∈ {"custom", "base"}
+        极端 base 都坏时 → (空, 空, errors, "base"),由调用方决定 raise。
+    """
+    custom_dir = os.getenv("TOWN_CONFIG_DIR")
+    if custom_dir:
+        custom_path = Path(custom_dir)
+        personas, locations, errors = load_config(custom_path)
+        if errors:
+            logger.warning(
+                "[town] 自定义配置 %s 有 %d 条错误,回退到 base 默认:",
+                custom_path, len(errors),
+            )
+            for e in errors:
+                logger.warning("  - %s", e["message"])
+            personas, locations, errors = load_config(_BASE_CONFIG_DIR)
+            return personas, locations, errors, "base"
+        return personas, locations, errors, "custom"
+    personas, locations, errors = load_config(_BASE_CONFIG_DIR)
+    return personas, locations, errors, "base"
+
+
+async def bootstrap_reload(prev_ctx: dict | None = None) -> dict:
+    """阶段 3 (REQ-7cfc9696) 重启生效端点用:复用基础设施,只重新装配 world + agents。
+
+    关键约束(架构警告 — 任务 T9):
+      - 复用 prev_ctx 里的 llm / bus / stm / ltm / reflector / event_store / trigger
+        / dialogue_gen(避免 Redis/Postgres/LLM 重连花销,也避免踢掉 WS 客户端)
+      - event_store 不动(保留历史事件,Postgres 持久)
+      - reflector 不动(6h 反思连续,不重置)
+      - 只重新读 config/ YAML,重新装配 world + agents
+
+    Args:
+        prev_ctx:上一轮 bootstrap() 装配的 ctx,用于复用基础设施。
+                 None 时退化到完整 bootstrap()(向后兼容)。
+
+    Returns:
+        新 ctx dict(人员/地点配置已重新加载,基础设施沿用)
+    """
+    if prev_ctx is None:
+        # 兼容模式:没传旧 ctx → 走完整 bootstrap()(含基础设施装配)
+        return await bootstrap()
+
+    # 1. 重新加载配置(YAML 改了再点按钮才生效)
+    personas, locations, errors, config_source = _load_config_with_fallback()
+    if not personas or not locations:
+        raise RuntimeError(
+            f"重启失败:配置损坏。errors={errors}"
+        )
+
+    # 2. 复用基础设施 — 关键不要 close 任何连接(会断 WS / 重置反思状态)
+    #    prev_ctx 是真 bootstrap() 装配结果,字段都齐全
+    llm = prev_ctx["llm"]
+    bus = prev_ctx["bus"]
+    stm = prev_ctx["stm"]
+    ltm = prev_ctx["ltm"]
+    reflector = prev_ctx["reflector"]
+    event_store = prev_ctx["event_store"]
+    trigger = prev_ctx["trigger"]
+    dialogue_gen = prev_ctx["dialogue_gen"]
+
+    # 3. 重新装配 world(新 valid_locations 列表)+ agents(新 persona)
+    world = World(valid_locations=[loc["name"] for loc in locations])
+    agents: dict[str, Agent] = {}
+    for p in personas:
+        world.place(p["id"], p["start_location"])
+        a = Agent(
+            agent_id=p["id"],
+            name=p["name"],
+            persona=p["persona"],
+            llm=llm,
+            stm=stm,
+            ltm=ltm,
+            reflector=reflector,
+        )
+        agents[p["id"]] = a
+
+    return {
+        # 沿用(避免重连 + 不踢 WS)
+        "llm": llm,
+        "bus": bus,
+        "stm": stm,
+        "ltm": ltm,
+        "reflector": reflector,
+        "event_store": event_store,
+        "trigger": trigger,
+        "dialogue_gen": dialogue_gen,
+        # 重新装配
+        "world": world,
+        "agents": agents,
+        "personas": personas,
         "locations": locations,
         "config_source": config_source,
         "config_errors": errors,
