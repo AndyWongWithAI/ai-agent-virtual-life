@@ -4,9 +4,11 @@
   1. 加载 personas.yaml + locations.yaml(阶段 3 / REQ-7cfc9696)
      — 自定义 config_dir 优先(TOWN_CONFIG_DIR env),有错则回退到 base 默认
   2. 基础设施:LLMClient(读 env var)、EventBus(Redis)、EventStore(Postgres)
-  3. L1 组件:ShortTermMemory、LongTermMemory、Reflector
-  4. L2 组件:World、DialogueTrigger、DialogueGenerator
-  5. 组装 5 个 Agent 实例,各放到 world 起始位置
+     + scene_store engine + init_schema(阶段 3 v2 块 5)
+  3. 阶段 3 v2:seed 默认 5+5 场景到 DB(scene_seeder)
+  4. L1 组件:ShortTermMemory、LongTermMemory、Reflector
+  5. L2 组件:World、DialogueTrigger、DialogueGenerator
+  6. 组装 5 个 Agent 实例,各放到 world 起始位置
 
 返回 dict(称 ctx),由 main.py / FastAPI 路由 / WebSocket 共享。
 阶段 3 额外字段:locations / config_source / config_errors,供前端 toast + locations 端点。
@@ -16,6 +18,11 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv  # uv add python-dotenv
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from llm_client import LLMClient
 from memory_reflection import ShortTermMemory, LongTermMemory, Reflector
@@ -25,6 +32,7 @@ from virtual_world_engine import World
 from event_memory_system import EventStore
 from dialogue_generator import DialogueTrigger, DialogueGenerator
 
+from . import scene_seeder, scene_store
 from .config_loader import load_config
 
 # 加载 .env(放在 town/ 目录,即 apps/town/.env)
@@ -84,6 +92,12 @@ async def bootstrap() -> dict:
     world = World(valid_locations=[loc["name"] for loc in locations])
     event_store = EventStore(db_url)
     await event_store.init_schema()
+    # 阶段 3 v2:scene_store 自己的 engine(用同一 DATABASE_URL,与 EventStore 同库
+    # 不同 Base — scene_store.Base 隔离 metadata,避免交叉污染)
+    scene_engine: AsyncEngine = create_async_engine(db_url)
+    await scene_store.init_schema(scene_engine)
+    # seed 默认 5+5 场景(idempotent — scenes 表非空时跳过)
+    await scene_seeder.seed_default_scene_if_empty(scene_engine)
     trigger = DialogueTrigger()
     dialogue_gen = DialogueGenerator(llm)
 
@@ -118,6 +132,14 @@ async def bootstrap() -> dict:
         "locations": locations,
         "config_source": config_source,
         "config_errors": errors,
+        # 阶段 3 v2(块 5):scene_store DB 引擎 + session factory
+        # — /api/scenes/* 端点用它读 scenes/personas/locations
+        # — activate 时调 scene_store.activate_scene(session, scene_id)
+        # — session_maker 不重连(共享 engine,expire_on_commit=False 避免 lazy load 失效)
+        "scene_engine": scene_engine,
+        "scene_session_maker": async_sessionmaker(
+            scene_engine, expire_on_commit=False,
+        ),
     }
 
 
@@ -149,19 +171,31 @@ def _load_config_with_fallback() -> tuple[list[dict], list[dict], list[dict], st
     return personas, locations, errors, "base"
 
 
-async def bootstrap_reload(prev_ctx: dict | None = None) -> dict:
+async def bootstrap_reload(
+    prev_ctx: dict | None = None,
+    personas: list[dict] | None = None,
+    locations: list[dict] | None = None,
+) -> dict:
     """阶段 3 (REQ-7cfc9696) 重启生效端点用:复用基础设施,只重新装配 world + agents。
 
     关键约束(架构警告 — 任务 T9):
       - 复用 prev_ctx 里的 llm / bus / stm / ltm / reflector / event_store / trigger
-        / dialogue_gen(避免 Redis/Postgres/LLM 重连花销,也避免踢掉 WS 客户端)
+        / dialogue_gen / scene_engine / scene_session_maker(避免重连花销,也不踢 WS)
       - event_store 不动(保留历史事件,Postgres 持久)
       - reflector 不动(6h 反思连续,不重置)
-      - 只重新读 config/ YAML,重新装配 world + agents
+      - 只重新装配 world + agents(personas/locations 来源可能来自 YAML 也可能来自 DB)
+
+    阶段 3 v2(块 4 / T20):personas/locations 参数允许直接传 DB 数据(来自
+    scene_store.activate_scene)而不走 YAML 路径;两参数都传则覆盖 YAML 加载,
+    任一为 None 则回退 YAML(向后兼容 v1 /api/restart 端点)。
 
     Args:
         prev_ctx:上一轮 bootstrap() 装配的 ctx,用于复用基础设施。
                  None 时退化到完整 bootstrap()(向后兼容)。
+        personas:可选,直接传入 personas 列表(从 DB 读出的格式)。
+                 None → 回退 YAML。
+        locations:可选,直接传入 locations 列表(从 DB 读出的格式)。
+                   None → 回退 YAML。
 
     Returns:
         新 ctx dict(人员/地点配置已重新加载,基础设施沿用)
@@ -170,12 +204,24 @@ async def bootstrap_reload(prev_ctx: dict | None = None) -> dict:
         # 兼容模式:没传旧 ctx → 走完整 bootstrap()(含基础设施装配)
         return await bootstrap()
 
-    # 1. 重新加载配置(YAML 改了再点按钮才生效)
-    personas, locations, errors, config_source = _load_config_with_fallback()
-    if not personas or not locations:
-        raise RuntimeError(
-            f"重启失败:配置损坏。errors={errors}"
+    # 1. 决定 personas/locations 来源
+    #    - 两参数都给 → 用传入的(DB 数据,v2 路径)
+    #    - 任一为 None → 回退 YAML(v1 路径,/api/restart 走这里)
+    if personas is not None and locations is not None:
+        # v2 DB 路径:activate 端点传入,无 errors / config_source 概念(都是 DB)
+        errors: list[dict] = []
+        config_source = "db"
+        logger.info(
+            "bootstrap_reload: using %d personas + %d locations from DB (scene activation)",
+            len(personas), len(locations),
         )
+    else:
+        # v1 YAML 路径:/api/restart 重启生效
+        personas, locations, errors, config_source = _load_config_with_fallback()
+        if not personas or not locations:
+            raise RuntimeError(
+                f"重启失败:配置损坏。errors={errors}"
+            )
 
     # 2. 复用基础设施 — 关键不要 close 任何连接(会断 WS / 重置反思状态)
     #    prev_ctx 是真 bootstrap() 装配结果,字段都齐全
@@ -187,6 +233,9 @@ async def bootstrap_reload(prev_ctx: dict | None = None) -> dict:
     event_store = prev_ctx["event_store"]
     trigger = prev_ctx["trigger"]
     dialogue_gen = prev_ctx["dialogue_gen"]
+    # 阶段 3 v2:scene_engine / scene_session_maker 沿用(共享 DB 连接池)
+    scene_engine = prev_ctx.get("scene_engine")
+    scene_session_maker = prev_ctx.get("scene_session_maker")
 
     # 3. 重新装配 world(新 valid_locations 列表)+ agents(新 persona)
     world = World(valid_locations=[loc["name"] for loc in locations])
@@ -214,6 +263,8 @@ async def bootstrap_reload(prev_ctx: dict | None = None) -> dict:
         "event_store": event_store,
         "trigger": trigger,
         "dialogue_gen": dialogue_gen,
+        "scene_engine": scene_engine,
+        "scene_session_maker": scene_session_maker,
         # 重新装配
         "world": world,
         "agents": agents,
