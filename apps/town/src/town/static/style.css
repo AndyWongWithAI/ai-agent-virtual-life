@@ -31,6 +31,26 @@ h1 { color: #333; }
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* 阶段 3 收尾(任务 T9):重启生效按钮 — 复用 pause-toggle 样式,边框橙色区分 */
+#restart-toggle {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 4px 12px;
+  font-size: 13px;
+  border: 1px solid #f0ad4e;
+  border-radius: 4px;
+  background: #fff;
+  color: #f0ad4e;
+  cursor: pointer;
+}
+#restart-toggle:hover {
+  background: #f0ad4e;
+  color: #fff;
+}
+#restart-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 #clock { font-size: 18px; color: #666; margin-bottom: 10px; }
 #map-container { border: 2px solid #ccc; display: inline-block; background: #fff; }
 canvas { display: block; }
