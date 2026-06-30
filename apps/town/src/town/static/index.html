@@ -18,8 +18,36 @@
   <!-- 阶段 3 (REQ-7cfc9696):YAML 配置错误 toast 容器 -->
   <div id="config-toast" class="hidden"></div>
   <div id="current-panel">
-    <h3>近况</h3>
-    <div id="current-list"></div>
+    <div class="panel-tabs">
+      <button class="tab-btn active" data-tab="status">近况</button>
+      <button class="tab-btn" data-tab="director">导演</button>
+    </div>
+    <div id="tab-status" class="tab-pane">
+      <div id="current-list"></div>
+    </div>
+    <div id="tab-director" class="tab-pane hidden">
+      <div class="director-block">
+        <h4>场景注入</h4>
+        <textarea id="scene-content" placeholder="例:今天李四过生日,大家准备惊喜" maxlength="200"></textarea>
+        <button id="scene-inject" type="button">注入场景</button>
+      </div>
+      <div class="director-block">
+        <h4>时间控制</h4>
+        <div class="speed-buttons">
+          <button data-speed="0.5" type="button">0.5x</button>
+          <button data-speed="1.0" class="active" type="button">1x</button>
+          <button data-speed="2.0" type="button">2x</button>
+          <button data-speed="4.0" type="button">4x</button>
+        </div>
+        <button id="director-pause" type="button">⏸ 暂停</button>
+      </div>
+      <div class="director-block">
+        <h4>时间倒带</h4>
+        <input type="datetime-local" id="replay-ts">
+        <button id="replay-fetch" type="button">拉取</button>
+        <div id="replay-output"></div>
+      </div>
+    </div>
   </div>
   <div id="agent-panel" class="hidden">
     <button id="agent-panel-close" aria-label="关闭">×</button>
