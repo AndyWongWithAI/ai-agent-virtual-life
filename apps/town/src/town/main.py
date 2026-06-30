@@ -22,7 +22,7 @@ import logging
 import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import combinations
 from pathlib import Path
 
@@ -37,6 +37,7 @@ from memory_reflection import Event
 from virtual_world_engine import DEFAULT_LOCATIONS, LABELS_ZH, STATUS_KEYS
 
 from .bootstrap import bootstrap, bootstrap_reload
+from .director import get_state, set_scene, set_speed
 from . import metrics as m
 
 # I17 fix(P3 #109):logging.basicConfig 必须在模块顶部(import 时即生效),
@@ -160,7 +161,10 @@ async def tick_loop():
     scheduler = TickScheduler()
     while True:
         interval = scheduler.interval_for()
-        await asyncio.sleep(interval)
+        # 阶段 2 块 2(任务 T11):倍速控制 — sleep 时长按 speed 缩放
+        # speed=1.0 → 正常;4x → 间隔 1/4;0.5x → 间隔 2 倍
+        speed = get_state().get("speed", 1.0)
+        await asyncio.sleep(interval / speed)
         try:
             await run_tick()
         except Exception:
@@ -177,6 +181,10 @@ async def run_tick():
     m.town_tick_total.inc()  # Phase 7:tick 计数
     # 任务 #113:tick 开头对所有 agent 应用时间衰减(饿/累/孤独 涨,快乐略降)
     ctx["world"].tick_decay()
+    # 任务 T10(阶段 2 块 1):tick 开头读 director.last_scene,塞到所有 agent 的
+    # 当前 tick 决策上下文。复用 user_command 通道(decision.py 已支持),避免扩
+    # agent.decide 签名。scene 每次 tick 注入直到 clear_scene()(设计清单 §2.1)。
+    director_scene = get_state().get("last_scene")
     last_actions: dict[str, str] = {}
     for agent_id, agent in ctx["agents"].items():
         snap = ctx["world"].snapshot(agent_id)
@@ -185,6 +193,10 @@ async def run_tick():
         if commands.get(agent_id):
             user_cmd = commands[agent_id].pop(0)
             logger.info("V5: agent %s 收到指令: %s", agent_id, user_cmd)
+        # 任务 T10:若 director 注入场景,把「导演场景:{content}」追加到 user_cmd,
+        # 复用 decision.py 的 user_command 通道(不需要改 L2 agent 签名)。
+        if director_scene and user_cmd is None:
+            user_cmd = f"导演场景:{director_scene['content']}"
         # I18 fix(P3 #109):LLM 失败(空响应/截断无法修复) → fallback 到 idle
         # 而不是 raise,否则该 agent tick 整轮失败,UI 上"卡死"。
         # logger.warning 留下证据,既可观测又不阻塞其他 agent。
@@ -486,8 +498,16 @@ async def _broadcast_control(kind: str) -> None:
 
     绕过 event_bus(避免增加 topic 类型)— town 控制信号是 town 自治事件,
     不属于 L1/L2 业务通路。失败客户端自动从 ws_clients 摘除(同 _ws_broadcast)。
+
+    阶段 2 块 2(任务 T11):扩 payload 含 speed,前端可在倍速切换时立即刷新按钮高亮。
     """
-    payload = {"topic": "town.control", "kind": kind, "paused": _paused}
+    state = get_state()
+    payload = {
+        "topic": "town.control",
+        "kind": kind,
+        "paused": state.get("paused", False),
+        "speed": state.get("speed", 1.0),
+    }
     dead: list[WebSocket] = []
     results = await asyncio.gather(
         *[client.send_json(payload) for client in ws_clients],
@@ -596,6 +616,152 @@ async def town_status():
         "agents": len(ctx["agents"]) if ctx else 0,
         "ts": datetime.now().isoformat(),
     }
+
+
+# --- 阶段 2 块 1(任务 T10):导演场景注入 ---
+
+
+@app.post("/api/director/scene")
+async def inject_scene(body: dict):
+    """导演场景注入:下个 tick 把 {kind, content} 写到所有 agent 的 LLM prompt。
+
+    body: {"kind": str, "content": str}
+    - 返回 {ok, state};失败 400(content 不能空)。
+    - 同时 publish Topic.DIRECTOR_SCENE 让前端 WS 能看到注入事件。
+    """
+    import time
+    assert ctx is not None
+    kind = body.get("kind", "custom")
+    content = body.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="content 不能空")
+    set_scene(kind, content)
+    # publish 到 bus(bus 可能为 None 测试桩)
+    bus = ctx.get("bus")
+    if bus is not None:
+        await bus.publish(
+            Topic.DIRECTOR_SCENE,
+            {
+                "topic": Topic.DIRECTOR_SCENE.value,
+                "kind": kind,
+                "content": content,
+                "ts": time.time(),
+            },
+        )
+    return {"ok": True, "state": get_state()}
+
+
+@app.get("/api/director/state")
+async def director_state():
+    """导演面板状态查询:paused / speed / last_scene。"""
+    return get_state()
+
+
+# --- 阶段 2 块 3(任务 T12):时间倒带端点 ---
+
+
+@app.get("/api/director/replay")
+async def director_replay(ts: str | None = None, limit: int = 50):
+    """导演时间倒带:按 ts 拉 events + 每个 agent 的 LTM 摘要(只读回放,不改 SSOT)。
+
+    Query params:
+    - ts: ISO 格式时间字符串,默认 now-1h。解析失败 → 400。
+    - limit: 最多返 N 条 events,默认 50,上限 200(超出 clamp)。
+
+    Returns:
+        {
+            "ts": 入参 ts(ISO),
+            "events": [{"ts", "agent_id", "kind", "content"} ...] 按 asc 排序,
+            "summaries": {agent_id: [{"ts", "text"} ...] ...}
+        }
+
+    设计要点(决策清单 §2.3):
+    - 只读:不调 event_store.append / ltm.add_summary / world.place,SSOT 不动。
+    - ts 早于最早事件 → 200 + events=[](list_events 自然返空)。
+    - 每个 agent 各取最近 3 条 LTM(LTM 接口只支持按 N,不支持 since 过滤)。
+    """
+    assert ctx is not None
+    # 1. ts 解析
+    if ts is None:
+        cut_ts = datetime.now() - timedelta(hours=1)
+    else:
+        try:
+            cut_ts = datetime.fromisoformat(ts)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ts 解析失败:{ts!r} 不是 ISO 格式",
+            )
+    # 2. limit clamp(1-200)
+    limit = max(1, min(int(limit), 200))
+
+    # 3. 拉 events(asc):EventStore.list_events 返 desc,路由反转 + 过滤 ts
+    raw_events = await ctx["event_store"].list_events(limit=limit, since=cut_ts)
+    events = [
+        {
+            "ts": e.ts.isoformat(),
+            "agent_id": e.agent_id,
+            "kind": e.kind,
+            "content": e.content,
+        }
+        for e in reversed(raw_events)
+        if e.ts >= cut_ts  # 二次过滤:list_events since 是 >=,但若 mock 不一致时兜底
+    ]
+
+    # 4. 每个 agent 拉 LTM 摘要(n=3)
+    summaries: dict[str, list[dict]] = {}
+    for aid in ctx["agents"]:
+        items = await ctx["ltm"].recent_summaries(aid, n=3)
+        summaries[aid] = [
+            {"ts": s.period_end.isoformat(), "text": s.text} for s in items
+        ]
+
+    return {"ts": cut_ts.isoformat(), "events": events, "summaries": summaries}
+
+
+# --- 阶段 2 块 2(任务 T11):倍速控制端点 ---
+
+
+class DirectorControlRequest(BaseModel):
+    """POST /api/director/control body schema。
+
+    字段:
+    - action: "speed" | "pause" | "resume"(pause/resume 仍兼容 /api/pause 与 /api/resume)
+    - factor: float — speed action 必填,值必须在 (0.5, 1.0, 2.0, 4.0)
+    """
+
+    action: str
+    factor: float | None = None
+
+
+@app.post("/api/director/control")
+async def director_control(body: DirectorControlRequest):
+    """导演面板控制端点(阶段 2 块 2):倍速 / 暂停 / 恢复 统一入口。
+
+    body:
+    - {action: "speed", factor: 0.5|1.0|2.0|4.0} — 切倍速
+    - {action: "pause"} — 等价于 POST /api/pause(保留旧端点向后兼容)
+    - {action: "resume"} — 等价于 POST /api/resume
+
+    返回:{ok, state} 让前端立即拿到最新 director state。
+    失败:factor 越界 → 422(Pydantic 验证);action 非法 → 400。
+    """
+    action = body.action
+    if action == "speed":
+        if body.factor is None:
+            raise HTTPException(status_code=400, detail="factor 必填")
+        try:
+            set_speed(body.factor)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        await _broadcast_control("speed")
+        return {"ok": True, "state": get_state()}
+    if action == "pause":
+        # 复用 /api/pause 逻辑(避免双源真相)
+        return await pause_town()
+    if action == "resume":
+        return await resume_town()
+    raise HTTPException(status_code=400, detail=f"未知 action: {action}")
 
 
 @app.websocket("/ws")

@@ -27,7 +27,19 @@ async function loadPauseStatus() {
   }
 }
 
-function applyPausedState(paused) {
+// 阶段 2 块 4:init 拉 director state,同步暂停+倍速 UI
+async function loadDirectorState() {
+  try {
+    const resp = await fetch("/api/director/state");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    applyPausedState(data.paused, data.speed);
+  } catch (e) {
+    console.warn("[init] /api/director/state failed:", e);
+  }
+}
+
+function applyPausedState(paused, speed) {
   const btn = document.getElementById("pause-toggle");
   const badge = document.getElementById("paused-badge");
   if (btn) {
@@ -36,6 +48,23 @@ function applyPausedState(paused) {
   }
   if (badge) badge.classList.toggle("hidden", !paused);
   addEvent(paused ? "⏸ town 已暂停(tick 不跑,状态冻结)" : "▶ town 已启动");
+  // 阶段 2 块 4:同步导演面板暂停按钮 + 倍速高亮
+  const dPause = document.getElementById("director-pause");
+  if (dPause) {
+    dPause.textContent = paused ? "▶ 启动" : "⏸ 暂停";
+    dPause.classList.toggle("paused", paused);
+  }
+  applySpeedHighlight(typeof speed === "number" ? speed : null);
+}
+
+function applySpeedHighlight(speed) {
+  const buttons = document.querySelectorAll(".speed-buttons button[data-speed]");
+  if (!buttons.length) return;
+  if (speed == null) return;  // 不主动重置,避免覆盖用户未变化的本地选择
+  const target = String(speed);
+  buttons.forEach((b) => {
+    b.classList.toggle("active", b.dataset.speed === target);
+  });
 }
 
 async function togglePause() {
@@ -56,6 +85,190 @@ async function togglePause() {
     addEvent("❌ 暂停切换失败:" + e.message);
   } finally {
     btn.disabled = false;
+  }
+}
+
+// 阶段 2 块 4:导演面板 - tab 切换
+function switchTab(tabName) {
+  const panes = document.querySelectorAll(".tab-pane");
+  panes.forEach((p) => p.classList.add("hidden"));
+  const buttons = document.querySelectorAll(".tab-btn");
+  buttons.forEach((b) => b.classList.toggle("active", b.dataset.tab === tabName));
+  const target = document.getElementById("tab-" + tabName);
+  if (target) target.classList.remove("hidden");
+}
+
+// 阶段 2 块 4:场景注入 - POST /api/director/scene
+async function injectScene() {
+  const ta = document.getElementById("scene-content");
+  const btn = document.getElementById("scene-inject");
+  if (!ta || !btn) return;
+  const content = ta.value.trim();
+  if (!content) {
+    addEvent("⚠️ 场景内容不能空");
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/api/director/scene", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "preset", content }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    addEvent(`🎬 场景已注入:"${content}" (event_id=${data.event_id || "?"})`);
+    ta.value = "";
+  } catch (e) {
+    addEvent("❌ 场景注入失败:" + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// 阶段 2 块 4:倍速控制 - POST /api/director/control
+async function setSpeed(factor) {
+  const f = Number(factor);
+  if (![0.5, 1.0, 2.0, 4.0].includes(f)) {
+    addEvent("⚠️ 无效倍速:" + factor);
+    return;
+  }
+  try {
+    const resp = await fetch("/api/director/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "speed", factor: f }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    applySpeedHighlight(f);
+    addEvent(`⏱️ 倍速已设为 ${f}x`);
+  } catch (e) {
+    addEvent("❌ 倍速切换失败:" + e.message);
+  }
+}
+
+// 阶段 2 块 4:导演面板暂停按钮 - 走 /api/director/control pause/resume
+async function directorTogglePause() {
+  const btn = document.getElementById("director-pause");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const isPaused = btn.classList.contains("paused");
+    const action = isPaused ? "resume" : "pause";
+    const resp = await fetch("/api/director/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    applyPausedState(data.paused, data.speed);
+  } catch (e) {
+    addEvent("❌ 导演面板暂停切换失败:" + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// 阶段 2 块 4:时间倒带 - GET /api/director/replay?ts=ISO
+async function fetchReplay() {
+  const input = document.getElementById("replay-ts");
+  const out = document.getElementById("replay-output");
+  if (!input || !out) return;
+  const ts = input.value;
+  if (!ts) {
+    addEvent("⚠️ 请先选时间");
+    return;
+  }
+  // datetime-local 没带时区,按本地时间构造 ISO
+  const isoTs = new Date(ts).toISOString();
+  out.textContent = "加载中…";
+  try {
+    const resp = await fetch(`/api/director/replay?ts=${encodeURIComponent(isoTs)}&limit=50`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    renderReplay(out, data);
+  } catch (e) {
+    out.textContent = "❌ 拉取失败:" + e.message;
+    addEvent("❌ 时间倒带失败:" + e.message);
+  }
+}
+
+function renderReplay(out, data) {
+  out.innerHTML = "";
+  const ts = data.ts ? new Date(data.ts).toLocaleString("zh-CN") : "(?)";
+  const header = document.createElement("div");
+  header.style.fontWeight = "bold";
+  header.style.marginBottom = "4px";
+  header.textContent = `⏪ 时间点: ${ts}`;
+  out.appendChild(header);
+  const events = Array.isArray(data.events) ? data.events : [];
+  const summariesByAgent = data.summaries && typeof data.summaries === "object" ? data.summaries : {};
+  if (!events.length && !Object.keys(summariesByAgent).length) {
+    const empty = document.createElement("div");
+    empty.textContent = "(无数据)";
+    out.appendChild(empty);
+    return;
+  }
+  for (const ev of events) {
+    const div = document.createElement("div");
+    div.className = "replay-event";
+    const t = new Date(ev.ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const name = agentNames[ev.agent_id] || ev.agent_id || "?";
+    div.textContent = `[${t}] ${name}: [${ev.kind}] ${ev.content}`;
+    out.appendChild(div);
+  }
+  for (const [agentId, sums] of Object.entries(summariesByAgent)) {
+    if (!Array.isArray(sums) || !sums.length) continue;
+    const label = document.createElement("div");
+    label.style.fontWeight = "bold";
+    label.style.marginTop = "6px";
+    label.textContent = `📝 ${agentNames[agentId] || agentId} 摘要:`;
+    out.appendChild(label);
+    for (const s of sums) {
+      const div = document.createElement("div");
+      div.className = "replay-summary";
+      const t = new Date(s.ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+      div.textContent = `[${t}] ${s.text}`;
+      out.appendChild(div);
+    }
+  }
+}
+
+// 阶段 2 块 4:绑定导演面板事件
+function initDirectorPanel() {
+  // tab 切换
+  document.querySelectorAll(".tab-btn").forEach((b) => {
+    b.addEventListener("click", () => switchTab(b.dataset.tab));
+  });
+  // 场景注入
+  document.getElementById("scene-inject")?.addEventListener("click", injectScene);
+  // 倍速按钮
+  document.querySelectorAll(".speed-buttons button[data-speed]").forEach((b) => {
+    b.addEventListener("click", () => setSpeed(b.dataset.speed));
+  });
+  // 导演面板暂停按钮
+  document.getElementById("director-pause")?.addEventListener("click", directorTogglePause);
+  // 时间倒带
+  document.getElementById("replay-fetch")?.addEventListener("click", fetchReplay);
+  // 默认 datetime-local 为当前本地时间
+  const tsInput = document.getElementById("replay-ts");
+  if (tsInput && !tsInput.value) {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    tsInput.value = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
   }
 }
 
@@ -173,9 +386,11 @@ async function init() {
   });
   draw();
   // 任务 #125(Bug4) + 任务 #127(B1) + 任务 #131(P0 暂停):启动加载
-  await Promise.all([loadHistoricalEvents(), loadCurrentState(), loadPauseStatus()]);
+  await Promise.all([loadHistoricalEvents(), loadCurrentState(), loadPauseStatus(), loadDirectorState()]);
   connectWS();
   await initCommandPanel();
+  // 阶段 2 块 4:导演面板事件绑定 + tab 切换
+  initDirectorPanel();
   // 任务 #131(P0 暂停):按钮点击切换。DOMContentLoaded 时绑定即可,这里 init 同步调一次
   const pauseBtn = document.getElementById("pause-toggle");
   if (pauseBtn) pauseBtn.addEventListener("click", togglePause);
@@ -433,8 +648,9 @@ function connectWS() {
       // 任务 #127(B):memory.reflect 主题保留但前端不再渲染(产品决定完全去掉反思区);
       // 反思仍由 Reflector 写入 LTM,继续服务 LLM decision.prompt 的 recent_summary。
       // 任务 #131(P0 暂停):town.control 不绕 bus,直接 broadcast,togglePaused 同步 UI
+      // 阶段 2 块 4:同时同步 speed 字段
       case "town.control": {
-        applyPausedState(msg.paused);
+        applyPausedState(msg.paused, msg.speed);
         break;
       }
       default:
