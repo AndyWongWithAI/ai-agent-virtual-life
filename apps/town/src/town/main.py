@@ -22,7 +22,7 @@ import logging
 import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import combinations
 from pathlib import Path
 
@@ -681,17 +681,24 @@ async def director_replay(ts: str | None = None, limit: int = 50):
     - 每个 agent 各取最近 3 条 LTM(LTM 接口只支持按 N,不支持 since 过滤)。
     """
     assert ctx is not None
-    # 1. ts 解析
+    # 1. ts 解析 — 阶段 2 收尾(任务 T15):必须返 tz-aware datetime,与
+    # SQLAlchemy Event.ts (timestamptz) 对齐。否则 naive vs aware 比较触发
+    # TypeError("/api/director/replay" prod 500,任务上下文说明)。
     if ts is None:
-        cut_ts = datetime.now() - timedelta(hours=1)
+        cut_ts = datetime.now(timezone.utc) - timedelta(hours=1)
     else:
         try:
-            cut_ts = datetime.fromisoformat(ts)
+            user_ts = datetime.fromisoformat(ts)
         except ValueError:
             raise HTTPException(
                 status_code=400,
                 detail=f"ts 解析失败:{ts!r} 不是 ISO 格式",
             )
+        # naive datetime 视作 UTC(服务端默认 UTC;前端若传 ISO 无时区也兼容),
+        # 已经是 aware 的保持原样(Browser 传过来的通常带 +00:00 或本地 offset)。
+        if user_ts.tzinfo is None:
+            user_ts = user_ts.replace(tzinfo=timezone.utc)
+        cut_ts = user_ts
     # 2. limit clamp(1-200)
     limit = max(1, min(int(limit), 200))
 
