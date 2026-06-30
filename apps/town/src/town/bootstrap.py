@@ -98,7 +98,9 @@ async def bootstrap() -> dict:
     reflector = Reflector(llm, stm, ltm)
 
     # 4. L2 组件
-    world = World()
+    # 阶段 3 (T6):把 YAML locations 的 name 列表注入 World,替换硬编码
+    # DEFAULT_LOCATIONS,让自定义地点名也能通过 place() 的 assert。
+    world = World(valid_locations=[loc["name"] for loc in locations])
     event_store = EventStore(db_url)
     await event_store.init_schema()
     trigger = DialogueTrigger()
