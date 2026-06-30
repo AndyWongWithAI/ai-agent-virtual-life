@@ -22,7 +22,7 @@ import logging
 import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import combinations
 from pathlib import Path
 
@@ -655,6 +655,68 @@ async def inject_scene(body: dict):
 async def director_state():
     """导演面板状态查询:paused / speed / last_scene。"""
     return get_state()
+
+
+# --- 阶段 2 块 3(任务 T12):时间倒带端点 ---
+
+
+@app.get("/api/director/replay")
+async def director_replay(ts: str | None = None, limit: int = 50):
+    """导演时间倒带:按 ts 拉 events + 每个 agent 的 LTM 摘要(只读回放,不改 SSOT)。
+
+    Query params:
+    - ts: ISO 格式时间字符串,默认 now-1h。解析失败 → 400。
+    - limit: 最多返 N 条 events,默认 50,上限 200(超出 clamp)。
+
+    Returns:
+        {
+            "ts": 入参 ts(ISO),
+            "events": [{"ts", "agent_id", "kind", "content"} ...] 按 asc 排序,
+            "summaries": {agent_id: [{"ts", "text"} ...] ...}
+        }
+
+    设计要点(决策清单 §2.3):
+    - 只读:不调 event_store.append / ltm.add_summary / world.place,SSOT 不动。
+    - ts 早于最早事件 → 200 + events=[](list_events 自然返空)。
+    - 每个 agent 各取最近 3 条 LTM(LTM 接口只支持按 N,不支持 since 过滤)。
+    """
+    assert ctx is not None
+    # 1. ts 解析
+    if ts is None:
+        cut_ts = datetime.now() - timedelta(hours=1)
+    else:
+        try:
+            cut_ts = datetime.fromisoformat(ts)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ts 解析失败:{ts!r} 不是 ISO 格式",
+            )
+    # 2. limit clamp(1-200)
+    limit = max(1, min(int(limit), 200))
+
+    # 3. 拉 events(asc):EventStore.list_events 返 desc,路由反转 + 过滤 ts
+    raw_events = await ctx["event_store"].list_events(limit=limit, since=cut_ts)
+    events = [
+        {
+            "ts": e.ts.isoformat(),
+            "agent_id": e.agent_id,
+            "kind": e.kind,
+            "content": e.content,
+        }
+        for e in reversed(raw_events)
+        if e.ts >= cut_ts  # 二次过滤:list_events since 是 >=,但若 mock 不一致时兜底
+    ]
+
+    # 4. 每个 agent 拉 LTM 摘要(n=3)
+    summaries: dict[str, list[dict]] = {}
+    for aid in ctx["agents"]:
+        items = await ctx["ltm"].recent_summaries(aid, n=3)
+        summaries[aid] = [
+            {"ts": s.period_end.isoformat(), "text": s.text} for s in items
+        ]
+
+    return {"ts": cut_ts.isoformat(), "events": events, "summaries": summaries}
 
 
 # --- 阶段 2 块 2(任务 T11):倍速控制端点 ---
