@@ -190,6 +190,54 @@ def _cross_validate(
                 )
 
 
+def load_config_from_yaml_bytes(
+    content: bytes, file_label: str = "uploaded.yaml"
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """阶段 3 v2 块 2(任务 T18):从 YAML 字节流加载 personas + locations(导入端点用)。
+
+    与 load_config(dir) 走相同校验链,只是输入源从「目录下两个 yaml 文件」
+    换成「单字节流(同时含 agents + locations)」。验证失败时 errors 非空,
+    由调用方(API 端点)决定 400 还是 fallback。
+
+    Args:
+        content: YAML 文本字节(utf-8)。
+        file_label: 错误条目里显示的文件名(默认 uploaded.yaml,API 可传上传文件名)。
+
+    Returns:
+        (personas, locations, errors) — 同 load_config 语义。
+
+    注意:
+        - 期望 YAML 同时含顶层 agents + locations(单文件格式,非目录格式)。
+        - 跨文件校验正常跑(adjacency 引用、start_location 引用)。
+    """
+    errors: list[dict] = []
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as e:
+        errors.append(_err(file_label, f"{file_label} 编码失败(非 utf-8): {e}"))
+        return [], [], errors
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        line = None
+        mark = getattr(e, "problem_mark", None)
+        if mark is not None:
+            line = mark.line + 1
+        errors.append(_err(file_label, f"{file_label} YAML 解析失败: {e}", line=line))
+        return [], [], errors
+
+    personas = _validate_personas(raw, file_label, errors)
+    # 把 locations 当作 raw["locations"] 传过去 — 但 _validate_locations 期望 raw["locations"]
+    # 这里 raw 同时含 agents + locations,需要单独提
+    loc_raw = raw.get("locations") if isinstance(raw, dict) else None
+    # 复用 _validate_locations:它需要顶层 dict + "locations" key。
+    # 构造临时 dict 给它用,不要 mutate raw(可能含 agents)。
+    fake_top = {"locations": loc_raw} if loc_raw is not None else None
+    locations, loc_names = _validate_locations(fake_top, file_label, errors)
+    _cross_validate(personas, locations, loc_names, errors)
+    return personas, locations, errors
+
+
 def load_config(config_dir: Path) -> tuple[list[dict], list[dict], list[dict]]:
     """加载 town YAML 配置,聚合错误,返回 (personas, locations, errors)。
 

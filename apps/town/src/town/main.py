@@ -19,6 +19,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -26,10 +27,11 @@ from datetime import datetime, timedelta, timezone
 from itertools import combinations
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket
+import yaml
+from fastapi import FastAPI, HTTPException, UploadFile, WebSocket
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_behavior_orchestrator import TickScheduler
 from event_bus import Topic
@@ -724,6 +726,327 @@ async def director_replay(ts: str | None = None, limit: int = 50):
         ]
 
     return {"ts": cut_ts.isoformat(), "events": events, "summaries": summaries}
+
+
+# --- 阶段 3 v2 块 2(任务 T18):8 个场景 API 端点 ---
+#
+# 设计原则:
+# - 全部走 scene_store L1 函数(不直接 ORM),保证资产复用 + 单测覆盖完整
+# - Pydantic BaseModel 校验 body(name 1-64、description 0-500)
+# - bootstrap_reload 是 activate 路径必需的副作用(切 ctx["personas/locations"])
+#   T20 会把 bootstrap() 装配改成"激活即读 DB 里的 builtin scene";此端点先 stub 住。
+# - _get_scene_session 是测试 monkey-patch 点(per in_memory_session_factory fixture)
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from . import scene_store as ss
+from .config_loader import load_config_from_yaml_bytes
+
+
+# 模块级 scene_db engine + Session factory(per 决策:T17 L1 不接 bootstrap,
+# 这里 lazy init — lifespan 跑过之后才有 engine;测试 monkey-patch _get_scene_session 替换)。
+_scene_engine = None
+_scene_session_factory: async_sessionmaker | None = None
+
+
+def _get_scene_session():
+    """返一个新的 AsyncSession(per-request)。
+
+    生产:DATABASE_URL 创建的 AsyncEngine + init_schema 已建表。
+    测试:monkey-patch 为 in-memory SQLite factory(per in_memory_session_factory)。
+    """
+    global _scene_engine, _scene_session_factory
+    if _scene_session_factory is None:
+        db_url = os.getenv(
+            "DATABASE_URL",
+            "postgresql+asyncpg://town:town_dev_pwd@localhost:5432/town",
+        )
+        _scene_engine = create_async_engine(db_url)
+        _scene_session_factory = async_sessionmaker(_scene_engine, expire_on_commit=False)
+    return _scene_session_factory()
+
+
+# --- Pydantic schemas ---
+
+
+class SceneCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    description: str = Field(default="", max_length=500)
+
+
+class SceneUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class SceneResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    is_builtin: bool
+    created_at: datetime
+    updated_at: datetime
+    personas: list[dict] = []
+    locations: list[dict] = []
+
+
+class SceneActivateResponse(BaseModel):
+    activated: bool
+    scene_id: int
+    scene_name: str
+    personas_count: int
+    locations_count: int
+
+
+# --- 8 个端点 ---
+
+
+@app.get("/api/scenes")
+async def list_scenes():
+    """列出所有 scene(按 id 升序)。"""
+    async with _get_scene_session() as s:
+        scenes = await ss.list_scenes(s)
+    return scenes
+
+
+@app.post("/api/scenes", status_code=201)
+async def create_scene(body: SceneCreate):
+    """创建 scene。name 唯一约束冲突 → 400。"""
+    name = body.name.strip()
+    async with _get_scene_session() as s:
+        try:
+            sid = await ss.create_scene(s, name=name, description=body.description)
+        except IntegrityError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"场景名 '{name}' 已存在",
+            )
+    return {"id": sid}
+
+
+@app.get("/api/scenes/{scene_id}")
+async def get_scene(scene_id: int):
+    """返 scene 元数据 + 它的 personas + locations。
+
+    404:scene_id 不存在。
+    """
+    async with _get_scene_session() as s:
+        sc = await ss.get_scene(s, scene_id)
+        if sc is None:
+            raise HTTPException(status_code=404, detail=f"scene {scene_id} 不存在")
+        personas = await ss.list_personas(s, scene_id)
+        locations = await ss.list_locations(s, scene_id)
+    return {
+        **sc,
+        "personas": personas,
+        "locations": locations,
+    }
+
+
+@app.patch("/api/scenes/{scene_id}")
+async def update_scene(scene_id: int, body: SceneUpdate):
+    """部分字段更新(name / description)。None 字段不改。"""
+    async with _get_scene_session() as s:
+        sc = await ss.get_scene(s, scene_id)
+        if sc is None:
+            raise HTTPException(status_code=404, detail=f"scene {scene_id} 不存在")
+        # 校验:None 不传,否则 trim + 必填
+        new_name = body.name.strip() if body.name is not None else sc["name"]
+        new_desc = (
+            body.description if body.description is not None else sc["description"]
+        )
+        try:
+            ok = await ss.update_scene(s, scene_id, name=new_name, description=new_desc)
+        except IntegrityError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"场景名 '{new_name}' 已存在",
+            )
+    return {"updated": ok, "id": scene_id}
+
+
+@app.delete("/api/scenes/{scene_id}", status_code=204)
+async def delete_scene(scene_id: int):
+    """删除 scene。内置场景 → 409;不存在 → 404。"""
+    async with _get_scene_session() as s:
+        sc = await ss.get_scene(s, scene_id)
+        if sc is None:
+            raise HTTPException(status_code=404, detail=f"scene {scene_id} 不存在")
+        if sc["is_builtin"]:
+            raise HTTPException(status_code=409, detail="内置场景不可删除")
+        ok = await ss.delete_scene(s, scene_id)
+        if not ok:
+            raise HTTPException(status_code=409, detail="删除失败(可能是内置场景)")
+    return Response(status_code=204)
+
+
+@app.post("/api/scenes/{scene_id}/activate")
+async def activate_scene_endpoint(scene_id: int):
+    """激活 scene:读 DB → bootstrap_reload(personas=..., locations=...) 切 ctx。
+
+    阶段 3 v2 块 4(T20):把 DB 里的 scene 数据直接传入 bootstrap_reload(不走 YAML),
+    让 world + agents 真正按 scene 装配。复用 prev_ctx 的基础设施(LLM/bus/reflector
+    不重连,WS 客户端不踢,6h 反思连续)。
+
+    流程:
+      1. 读 scene 详情(validate exists)
+      2. 读 scene_personas + scene_locations(scene_store.activate_scene)
+      3. bootstrap_reload(prev_ctx, personas, locations)— DB 路径
+      4. WS 广播 scene_activated(前端收到后刷新页面让新场景生效)
+      5. 返 {status, scene_id, scene_name, personas_count, locations_count}
+
+    失败:
+      - scene 不存在 → 404
+      - bootstrap_reload 抛 → 500(数据损坏或装配失败)
+    """
+    global ctx
+    async with _get_scene_session() as s:
+        sc = await ss.get_scene(s, scene_id)
+        if sc is None:
+            raise HTTPException(status_code=404, detail=f"scene {scene_id} 不存在")
+        activated = await ss.activate_scene(s, scene_id)
+    # 切 ctx(若已 bootstrap)— 传 DB 数据(v2 路径,不读 YAML)
+    if ctx is not None:
+        try:
+            ctx = await bootstrap_reload(
+                prev_ctx=ctx,
+                personas=activated["personas"],
+                locations=activated["locations"],
+            )
+        except Exception:
+            logger.exception("activate: bootstrap_reload failed for scene %s", scene_id)
+            raise HTTPException(status_code=500, detail="激活失败(配置切换异常)")
+        # WS 广播 scene_activated(前端收到后刷新页面)
+        await _broadcast_scene_change(sc["name"], scene_id)
+    return {
+        "status": "activated",
+        "scene_id": scene_id,
+        "scene_name": sc["name"],
+        "personas_count": len(activated["personas"]),
+        "locations_count": len(activated["locations"]),
+    }
+
+
+async def _broadcast_scene_change(scene_name: str, scene_id: int) -> None:
+    """阶段 3 v2 块 4(T20):scene 激活后通知所有 WS 客户端刷新页面。
+
+    复用 _ws_broadcast 的 ws_clients 列表 + 失败客户端清理模式(同 _broadcast_control)。
+    topic=town.control + kind=scene_activated 是 town 自治事件,不绕 bus。
+    """
+    payload = {
+        "topic": "town.control",
+        "kind": "scene_activated",
+        "scene_activated": scene_name,
+        "scene_id": scene_id,
+    }
+    dead: list[WebSocket] = []
+    results = await asyncio.gather(
+        *[client.send_json(payload) for client in ws_clients],
+        return_exceptions=True,
+    )
+    for client, res in zip(list(ws_clients), results):
+        if isinstance(res, Exception):
+            dead.append(client)
+    for d in dead:
+        if d in ws_clients:
+            ws_clients.remove(d)
+    logger.info(
+        "scene_activated broadcast: name=%s, id=%d, clients=%d",
+        scene_name, scene_id, len(ws_clients),
+    )
+
+
+@app.post("/api/scenes/import-yaml", status_code=201)
+async def import_yaml_scene(file: UploadFile):
+    """YAML 文件 → 新 scene(name=文件名去扩展,description='从 YAML 导入')。
+
+    期望 YAML 同时含 agents + locations 顶层 key。
+    校验失败(errors 非空) → 400 + errors 列表。
+    """
+    content = await file.read()
+    filename = file.filename or "uploaded.yaml"
+    name_no_ext = filename.rsplit(".", 1)[0] if "." in filename else filename
+    personas, locations, errors = load_config_from_yaml_bytes(
+        content, file_label=filename
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail={"message": "YAML 校验失败", "errors": errors})
+    if not personas or not locations:
+        raise HTTPException(status_code=400, detail="YAML 必须含至少 1 个 agent 和 1 个 location")
+
+    async with _get_scene_session() as s:
+        try:
+            sid = await ss.create_scene(
+                s, name=name_no_ext, description="从 YAML 导入", is_builtin=False
+            )
+        except IntegrityError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"场景名 '{name_no_ext}' 已存在(可改名后重试)",
+            )
+        for p in personas:
+            try:
+                await ss.add_persona(
+                    s,
+                    scene_id=sid,
+                    agent_id=p["id"],
+                    name=p["name"],
+                    persona=p["persona"],
+                    start_location=p["start_location"],
+                    color=p.get("color", "#888888"),
+                )
+            except (IntegrityError, KeyError) as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"persona '{p.get('id', '<unknown>')}' 导入失败: {e}",
+                )
+        for loc in locations:
+            try:
+                await ss.add_location(
+                    s,
+                    scene_id=sid,
+                    name=loc["name"],
+                    x=int(loc["x"]),
+                    y=int(loc["y"]),
+                    color=loc.get("color", "#FFD700"),
+                    adjacency=list(loc.get("adjacency", [])),
+                )
+            except (IntegrityError, KeyError) as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"location '{loc.get('name', '<unknown>')}' 导入失败: {e}",
+                )
+    return {"id": sid, "name": name_no_ext, "personas": len(personas), "locations": len(locations)}
+
+
+@app.get("/api/scenes/{scene_id}/export-yaml")
+async def export_yaml_scene(scene_id: int):
+    """导出 scene 为 YAML 字符串(2 个顶层 key:`agents:` + `locations:`)。"""
+    async with _get_scene_session() as s:
+        sc = await ss.get_scene(s, scene_id)
+        if sc is None:
+            raise HTTPException(status_code=404, detail=f"scene {scene_id} 不存在")
+        personas = await ss.list_personas(s, scene_id)
+        locations = await ss.list_locations(s, scene_id)
+    yaml_text = yaml.safe_dump(
+        {"agents": personas, "locations": locations},
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    # Content-Disposition 用 latin-1,中文文件名用 RFC 5987 (filename*=UTF-8'') 转义
+    from urllib.parse import quote
+    safe_name = quote(sc["name"], safe="")
+    return Response(
+        content=yaml_text,
+        media_type="text/yaml; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=scene-{scene_id}.yaml; "
+                f"filename*=UTF-8''{safe_name}.yaml"
+            ),
+        },
+    )
 
 
 # --- 阶段 2 块 2(任务 T11):倍速控制端点 ---
